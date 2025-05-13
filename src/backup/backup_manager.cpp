@@ -9,6 +9,7 @@
 #include <type_traits>
 #include <algorithm>
 #include <stdexcept>
+#include <nlohmann/json.hpp>
 
 namespace vmware {
 
@@ -141,33 +142,45 @@ BackupConfig BackupManager::getBackupConfig(const std::string& vmId) const {
 
 bool BackupManager::prepareVMForBackup(const std::string& vmId) {
     // Get VM info
-    auto vmInfo = restClient_->getVMInfo(vmId);
-    if (vmInfo.is_null()) {
+    nlohmann::json vmInfo;
+    if (!restClient_->getVMInfo(vmId, vmInfo)) {
+        LOG_ERROR("Failed to get VM info for {}", vmId);
         return false;
     }
 
-    // Enable CBT if needed
-    if (!restClient_->enableCBT(vmId)) {
-        return false;
+    // Enable CBT if supported
+    if (vmInfo["hardware"]["version"].get<std::string>() >= "vmx-13") {
+        if (!restClient_->setVMConfig(vmId, "ctkEnabled", true)) {
+            LOG_ERROR("Failed to enable CBT for {}", vmId);
+            return false;
+        }
     }
 
     return true;
 }
 
 bool BackupManager::cleanupVMAfterBackup(const std::string& vmId) {
-    // Disable CBT
-    if (!restClient_->disableCBT(vmId)) {
-        return false;
+    // Disable CBT if it was enabled
+    nlohmann::json vmInfo;
+    if (restClient_->getVMInfo(vmId, vmInfo) && 
+        vmInfo["hardware"]["version"].get<std::string>() >= "vmx-13") {
+        if (!restClient_->setVMConfig(vmId, "ctkEnabled", false)) {
+            LOG_ERROR("Failed to disable CBT for {}", vmId);
+            return false;
+        }
     }
-
     return true;
 }
 
 std::string BackupManager::createBackupSnapshot(const std::string& vmId) {
     std::string snapshotName = "backup_" + std::to_string(std::time(nullptr));
-    if (!restClient_->createSnapshot(vmId, snapshotName)) {
+    std::string description = "Backup snapshot created by GenieVM";
+    
+    if (!restClient_->createSnapshot(vmId, snapshotName, description)) {
+        LOG_ERROR("Failed to create snapshot for {}", vmId);
         return "";
     }
+    
     return snapshotName;
 }
 

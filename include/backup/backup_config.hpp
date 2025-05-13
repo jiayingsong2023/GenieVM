@@ -5,16 +5,24 @@
 
 namespace vmware {
 
+enum class BackupType {
+    FULL,
+    INCREMENTAL
+};
+
 struct BackupConfig {
     // Backup location
     std::string backupDir;
     
     // Backup type
     bool useCBT = true;  // Changed Block Tracking
-    bool incremental = true;
+    bool incremental = false;
+    bool verify = false;
+    bool compress = false;
+    bool encrypt = false;
     
     // Retention settings
-    int retentionDays = 30;
+    int retentionDays = 7;
     int maxBackups = 10;
     
     // Performance settings
@@ -27,9 +35,10 @@ struct BackupConfig {
     std::chrono::seconds interval;  // For periodic backups
     
     // Advanced settings
-    bool quiesceVM = true;  // Use VMware Tools to quiesce the VM
+    bool quiesceVM = false;  // Use VMware Tools to quiesce the VM
     bool memorySnapshot = false;  // Include memory state in snapshot
     std::string description;
+    BackupType type = BackupType::FULL;
 };
 
 } // namespace vmware 

@@ -19,20 +19,19 @@ public:
     ~BackupScheduler();
 
     // Schedule management
-    bool addSchedule(const std::string& vmId, const BackupConfig& config);
-    bool removeSchedule(const std::string& vmId);
-    bool updateSchedule(const std::string& vmId, const BackupConfig& config);
-    bool getSchedule(const std::string& vmId, BackupConfig& config) const;
-    
-    // Schedule information
+    void addSchedule(const std::string& vmId, const BackupConfig& config);
+    void removeSchedule(const std::string& vmId);
+    void updateSchedule(const std::string& vmId, const BackupConfig& config);
+    BackupConfig getSchedule(const std::string& vmId) const;
     void getAllSchedules(std::vector<std::pair<std::string, BackupConfig>>& schedules) const;
     std::chrono::system_clock::time_point getNextRunTime(const std::string& vmId) const;
-    
-    // Retention management
-    bool applyRetentionPolicy(const std::string& vmId);
-    bool cleanupOldBackups(const std::string& vmId);
-    
-    // Schedule control
+    std::vector<std::string> getBackupPaths(const std::string& vmId) const;
+
+    // Retention policy
+    void applyRetentionPolicy(const std::string& vmId);
+    void cleanupOldBackups(const std::string& vmId);
+
+    // Scheduler control
     void start();
     void stop();
     bool isRunning() const { return running_; }
@@ -55,7 +54,6 @@ private:
     void updateNextRun(Schedule& schedule);
     std::chrono::system_clock::time_point calculateNextRun(const BackupConfig& config) const;
     bool isBackupExpired(const std::string& backupPath, int retentionDays) const;
-    std::vector<std::string> getBackupPaths(const std::string& vmId) const;
 };
 
 } // namespace vmware 

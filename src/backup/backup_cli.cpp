@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <ctime>
 #include <filesystem>
+#include <sstream>
 
 namespace vmware {
 
@@ -145,10 +146,11 @@ void BackupCLI::handleSchedule(int argc, char* argv[]) {
         return;
     }
 
-    if (scheduler_->addSchedule(vmId, config)) {
+    try {
+        scheduler_->addSchedule(vmId, config);
         std::cout << "Backup scheduled successfully" << std::endl;
-    } else {
-        std::cerr << "Failed to schedule backup" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to schedule backup: " << e.what() << std::endl;
     }
 }
 
@@ -165,32 +167,24 @@ void BackupCLI::handleList(int argc, char* argv[]) {
 
 void BackupCLI::handleVerify(int argc, char* argv[]) {
     if (argc < 3) {
-        std::cerr << "Error: Backup ID required for verification" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " verify <vm-id> <backup-id>" << std::endl;
         return;
     }
 
+    std::string vmId = argv[1];
     std::string backupId = argv[2];
-    BackupConfig config;
-    parseBackupOptions(argc, argv, config);
-
-    // Find the backup directory
-    std::filesystem::path backupPath = std::filesystem::path(config.backupDir) / backupId;
-    if (!std::filesystem::exists(backupPath)) {
-        std::cerr << "Error: Backup not found: " << backupPath << std::endl;
-        return;
-    }
-
-    // Get VM ID from backup directory name
-    std::string vmId = backupId.substr(0, backupId.find('-'));
-    if (vmId.empty()) {
-        std::cerr << "Error: Invalid backup ID format" << std::endl;
-        return;
-    }
 
     // Get VM disk paths
-    auto diskPaths = vsphereClient_->getVMDiskPaths(vmId);
-    if (diskPaths.empty()) {
-        std::cerr << "Error: No disks found for VM " << vmId << std::endl;
+    std::vector<std::string> diskPaths;
+    if (!vsphereClient_->getVMDiskPaths(vmId, diskPaths)) {
+        std::cerr << "Failed to get VM disk paths" << std::endl;
+        return;
+    }
+
+    // Find the backup directory
+    std::filesystem::path backupPath = std::filesystem::path("backups") / backupId;
+    if (!std::filesystem::exists(backupPath)) {
+        std::cerr << "Error: Backup not found: " << backupPath << std::endl;
         return;
     }
 
@@ -205,22 +199,22 @@ void BackupCLI::handleVerify(int argc, char* argv[]) {
         std::string backupDiskPath = (backupPath / std::filesystem::path(diskPath).filename()).string();
         
         // Create verifier
-        BackupVerifier verifier(diskPath, backupDiskPath);
-        if (!verifier.initialize()) {
+        auto verifier = std::make_unique<vmware::BackupVerifier>(diskPath, backupDiskPath);
+        if (!verifier->initialize()) {
             std::cerr << "Error: Failed to initialize verifier for disk: " << diskPath << std::endl;
             allVerified = false;
             continue;
         }
 
         // Set progress callback
-        verifier.setProgressCallback([&](double progress) {
+        verifier->setProgressCallback([&](double progress) {
             std::cout << "\rDisk " << (verifiedDisks + 1) << "/" << totalDisks 
                       << " - Progress: " << std::fixed << std::setprecision(1) 
                       << (progress * 100) << "%" << std::flush;
         });
 
         // Perform verification
-        bool success = verifier.verifyFull();
+        bool success = verifier->verifyFull();
         std::cout << std::endl;
 
         if (success) {
@@ -228,7 +222,7 @@ void BackupCLI::handleVerify(int argc, char* argv[]) {
             verifiedDisks++;
         } else {
             std::cerr << "Verification failed for disk: " << diskPath << std::endl;
-            std::cerr << "Error: " << verifier.getResult().errorMessage << std::endl;
+            std::cerr << "Error: " << verifier->getResult().errorMessage << std::endl;
             allVerified = false;
         }
     }
@@ -240,13 +234,22 @@ void BackupCLI::handleVerify(int argc, char* argv[]) {
     std::cout << "Status: " << (allVerified ? "PASSED" : "FAILED") << std::endl;
 }
 
-void BackupCLI::parseBackupOptions(int argc, char* argv, BackupConfig& config) {
-    for (int i = 3; i < argc; i++) {
+void BackupCLI::parseBackupOptions(int argc, char* argv[], BackupConfig& config) {
+    // Parse command line options
+    for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
-        if (arg == "--dir" && i + 1 < argc) {
-            config.backupDir = argv[++i];
+        if (arg == "--full") {
+            config.type = BackupType::FULL;
         } else if (arg == "--incremental") {
-            config.incremental = true;
+            config.type = BackupType::INCREMENTAL;
+        } else if (arg == "--verify") {
+            config.verify = true;
+        } else if (arg == "--compress") {
+            config.compress = true;
+        } else if (arg == "--encrypt") {
+            config.encrypt = true;
+        } else if (arg == "--dir" && i + 1 < argc) {
+            config.backupDir = argv[++i];
         } else if (arg == "--retention" && i + 1 < argc) {
             config.retentionDays = std::stoi(argv[++i]);
         } else if (arg == "--max-backups" && i + 1 < argc) {
@@ -285,25 +288,27 @@ std::chrono::system_clock::time_point BackupCLI::parseTime(const std::string& ti
 }
 
 void BackupCLI::listBackups(const std::string& vmId) {
-    BackupConfig config;
-    if (!scheduler_->getSchedule(vmId, config)) {
-        std::cerr << "No schedule found for VM " << vmId << std::endl;
-        return;
-    }
-
     auto backupPaths = scheduler_->getBackupPaths(vmId);
     if (backupPaths.empty()) {
         std::cout << "No backups found for VM " << vmId << std::endl;
         return;
     }
 
-    std::cout << "Backups for VM " << vmId << ":\n";
-    for (const auto& path : backupPaths) {
+    std::cout << "Backups for VM " << vmId << ":" << std::endl;
+    for (const auto& pathStr : backupPaths) {
+        std::filesystem::path path(pathStr);
         auto time = std::filesystem::last_write_time(path);
-        auto timeT = std::chrono::system_clock::to_time_t(
-            std::chrono::clock_cast<std::chrono::system_clock>(time));
-        std::cout << std::put_time(std::localtime(&timeT), "%Y-%m-%d %H:%M:%S")
-                  << " - " << std::filesystem::path(path).filename() << std::endl;
+        auto systemTime = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+            time - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
+        
+        auto timeT = std::chrono::system_clock::to_time_t(systemTime);
+        std::tm* tm = std::localtime(&timeT);
+        
+        std::stringstream ss;
+        ss << std::put_time(tm, "%Y-%m-%d %H:%M:%S");
+        
+        std::cout << "  " << path.filename().string() << " ("
+                  << ss.str() << ")" << std::endl;
     }
 }
 

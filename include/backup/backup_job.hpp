@@ -24,6 +24,14 @@ public:
     BackupJob(const std::string& vmId, const BackupConfig& config);
     ~BackupJob();
 
+    // Delete copy constructor and assignment
+    BackupJob(const BackupJob&) = delete;
+    BackupJob& operator=(const BackupJob&) = delete;
+
+    // Allow move constructor and assignment
+    BackupJob(BackupJob&&) noexcept = default;
+    BackupJob& operator=(BackupJob&&) noexcept = default;
+
     // Job control
     bool start();
     bool stop();

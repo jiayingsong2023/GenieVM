@@ -2,9 +2,13 @@
 
 #include <string>
 #include <memory>
-#include "backup/backup_config.hpp"
+#include <vector>
+#include "backup/backup_job.hpp"
 #include "backup/backup_scheduler.hpp"
+#include "backup/restore_job.hpp"
+#include "backup/backup_verifier.hpp"
 #include "common/vsphere_rest_client.hpp"
+#include "common/logger.hpp"
 
 namespace vmware {
 
