@@ -2,9 +2,7 @@
 
 #include <string>
 #include <functional>
-#include <thread>
 #include <mutex>
-#include <condition_variable>
 #include <map>
 #include <atomic>
 #include <ctime>
@@ -41,6 +39,9 @@ public:
     // Stop the scheduler
     void stop();
 
+    // Process pending tasks - should be called periodically from main thread
+    void processTasks();
+
 private:
     struct Task {
         TimePoint scheduledTime;
@@ -51,11 +52,8 @@ private:
 
     std::map<std::string, Task> tasks_;
     std::mutex tasksMutex_;
-    std::condition_variable condition_;
-    std::thread schedulerThread_;
     std::atomic<bool> running_;
 
-    void schedulerLoop();
     void executeTask(const std::string& taskId, const Task& task);
     TimePoint getNextExecutionTime(const Task& task);
 };

@@ -1,8 +1,7 @@
 #include "common/vsphere_manager.hpp"
-#include "common/thread_utils.hpp"
 #include <sstream>
 #include <soapH.h>
-#include <thread>
+#include <ctime>
 
 namespace vmware {
 
@@ -82,6 +81,7 @@ bool VSphereManager::createVM(const std::string& vmName,
 
         // Wait for the task to complete
         vim25::TaskInfo taskInfo;
+        time_t startTime = std::time(nullptr);
         while (true) {
             taskInfo = vimProxy_->ReadTask(vmRef);
             if (taskInfo.state == "success") {
@@ -90,8 +90,13 @@ bool VSphereManager::createVM(const std::string& vmName,
                 Logger::error("Failed to create VM: " + taskInfo.error->fault->faultString);
                 return false;
             }
-            // Sleep for a short time before checking again
-            vmware::thread_utils::sleep_for_seconds(1);
+            // Check if we've been waiting too long (e.g., 5 minutes)
+            if (std::time(nullptr) - startTime > 300) {
+                Logger::error("Timeout waiting for VM creation");
+                return false;
+            }
+            // Small delay to prevent CPU spinning
+            for (volatile int i = 0; i < 1000000; ++i) {}
         }
 
         Logger::info("Successfully created VM: " + vmName);
@@ -138,6 +143,7 @@ bool VSphereManager::attachDisks(const std::string& vmName,
 
         // Wait for the task to complete
         vim25::TaskInfo taskInfo;
+        time_t startTime = std::time(nullptr);
         while (true) {
             taskInfo = vimProxy_->ReadTask(taskRef);
             if (taskInfo.state == "success") {
@@ -146,8 +152,13 @@ bool VSphereManager::attachDisks(const std::string& vmName,
                 Logger::error("Failed to attach disks: " + taskInfo.error->fault->faultString);
                 return false;
             }
-            // Sleep for a short time before checking again
-            vmware::thread_utils::sleep_for_seconds(1);
+            // Check if we've been waiting too long (e.g., 5 minutes)
+            if (std::time(nullptr) - startTime > 300) {
+                Logger::error("Timeout waiting for disk attachment");
+                return false;
+            }
+            // Small delay to prevent CPU spinning
+            for (volatile int i = 0; i < 1000000; ++i) {}
         }
 
         Logger::info("Successfully attached " + std::to_string(diskPaths.size()) + 

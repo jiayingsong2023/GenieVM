@@ -2,13 +2,13 @@
 
 #include <string>
 #include <vector>
-#include <thread>
 #include <mutex>
-#include <condition_variable>
 #include <queue>
 #include <functional>
 #include <atomic>
 #include <future>
+#include <sys/types.h>
+#include <unistd.h>
 #include "common/logger.hpp"
 
 namespace vmware {
@@ -35,20 +35,24 @@ public:
     // Stop all tasks
     void stop();
 
+    // Process pending tasks - should be called periodically from main thread
+    void processTasks();
+
 private:
     struct Task {
         std::string id;
         TaskCallback callback;
         std::promise<void> promise;
+        pid_t processId;
     };
 
-    void workerThread();
     void processTask(Task& task);
+    bool shouldWorkerContinue() const;
+    void cleanupCompletedTasks();
 
     std::queue<Task> taskQueue_;
-    std::vector<std::thread> workerThreads_;
+    std::vector<Task> activeTasks_;
     std::mutex queueMutex_;
-    std::condition_variable queueCondition_;
     std::atomic<bool> running_;
     std::atomic<size_t> activeTaskCount_;
     size_t maxConcurrentTasks_;

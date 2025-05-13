@@ -1,7 +1,6 @@
 #pragma once
 
 #include <ctime>
-#include <thread>
 #include <unistd.h>  // for sleep()
 
 namespace vmware {
