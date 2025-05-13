@@ -1,8 +1,10 @@
 cmake_minimum_required(VERSION 3.10)
 project(vmware-backup-cbt VERSION 1.0.0 LANGUAGES CXX)
 
+# Set C++17 as required
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Find required packages
 find_package(OpenSSL REQUIRED)
@@ -19,12 +21,38 @@ if(NOT VSPHERE_SDK_ROOT)
     message(FATAL_ERROR "Please set VSPHERE_SDK_ROOT to the vSphere SDK installation directory")
 endif()
 
-# Include directories
-include_directories(
+# Add subdirectories
+add_subdirectory(src)
+
+# Add executables
+add_executable(vmware-backup src/main/backup_main.cpp)
+add_executable(vmware-restore src/main/restore_main.cpp)
+
+# Set include directories for all targets
+target_include_directories(vmware-backup-lib
+    PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${VDDK_ROOT}/include
     ${VSPHERE_SDK_ROOT}/include
     ${OPENSSL_INCLUDE_DIR}
+)
+
+target_include_directories(vmware-restore-lib
+    PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${VDDK_ROOT}/include
+    ${VSPHERE_SDK_ROOT}/include
+    ${OPENSSL_INCLUDE_DIR}
+)
+
+target_include_directories(vmware-backup
+    PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_include_directories(vmware-restore
+    PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 # Link directories
@@ -32,13 +60,6 @@ link_directories(
     ${VDDK_ROOT}/lib64
     ${VSPHERE_SDK_ROOT}/lib64
 )
-
-# Add subdirectories
-add_subdirectory(src)
-
-# Add executables
-add_executable(vmware-backup src/main/backup_main.cpp)
-add_executable(vmware-restore src/main/restore_main.cpp)
 
 # Link libraries
 target_link_libraries(vmware-backup

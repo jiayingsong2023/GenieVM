@@ -1,8 +1,14 @@
 #pragma once
 
 #include <string>
+#include <vector>
+#include <memory>
 #include <vixDiskLib.h>
-#include <vixDiskLibCommon.h>
+
+// Forward declare VixHandle if not defined in vixDiskLib.h
+#ifndef VIX_HANDLE_DEFINED
+typedef void* VixHandle;
+#endif
 
 namespace vmware {
 

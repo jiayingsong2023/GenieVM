@@ -4,6 +4,8 @@
 #include <memory>
 #include <vector>
 #include <chrono>
+#include <functional>
+#include <future>
 #include "common/vmware_connection.hpp"
 #include "common/scheduler.hpp"
 #include "common/parallel_task_manager.hpp"

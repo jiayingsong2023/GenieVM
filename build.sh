@@ -3,42 +3,37 @@
 # Exit on error
 set -e
 
-# Check if running as root
-if [ "$EUID" -eq 0 ]; then
-    echo "Please do not run this script as root"
+# Verify VDDK paths
+echo "Checking VDDK paths..."
+if [ ! -d "/usr/local/vddk/include" ]; then
+    echo "Error: VDDK include directory not found at /usr/local/vddk/include"
     exit 1
 fi
 
-# Check for required packages
-echo "Checking required packages..."
-if ! command -v cmake &> /dev/null; then
-    echo "CMake not found. Please install required packages first:"
-    echo "sudo dnf groupinstall 'Development Tools'"
-    echo "sudo dnf install cmake openssl-devel gcc-c++ make"
+if [ ! -f "/usr/local/vddk/include/vixDiskLib.h" ]; then
+    echo "Error: vixDiskLib.h not found at /usr/local/vddk/include/vixDiskLib.h"
     exit 1
 fi
 
-# Check for VDDK
-if [ -z "$VDDK_HOME" ]; then
-    echo "VDDK_HOME environment variable not set"
-    echo "Please set VDDK_HOME to your VDDK installation directory"
-    echo "Example: export VDDK_HOME=/usr/local/vddk"
-    exit 1
-fi
+# Check compiler version
+echo "Checking compiler version..."
+g++ --version
 
-# Create build directory
-echo "Creating build directory..."
+# Create build directory if it doesn't exist
 mkdir -p build
+
+# Change to build directory
 cd build
 
-# Configure with CMake
-echo "Configuring with CMake..."
-cmake .. -DCMAKE_BUILD_TYPE=Release \
-         -DVDDK_ROOT=$VDDK_HOME
+# Run CMake with the correct paths and verbose output
+cmake -DVDDK_ROOT=/usr/local/vddk \
+      -DVSPHERE_SDK_ROOT=/usr/local/vSphereSDK \
+      -DCMAKE_VERBOSE_MAKEFILE=ON \
+      -DCMAKE_CXX_COMPILER=g++ \
+      -DCMAKE_CXX_FLAGS="-std=gnu++17" \
+      ..
 
-# Build the project
-echo "Building the project..."
-make -j$(nproc)
+# Build the project with verbose output
+make VERBOSE=1
 
-echo "Build completed successfully!"
-echo "You can find the executables in the build directory" 
+echo "Build completed successfully!" 
