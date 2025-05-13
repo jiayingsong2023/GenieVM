@@ -1,70 +1,117 @@
 #include "common/logger.hpp"
 #include <iostream>
-#include <fstream>
-#include <ctime>
-#include <iomanip>
-#include <sstream>
+#include <filesystem>
 
 namespace vmware {
 
-std::ofstream Logger::logFile_;
-LogLevel Logger::currentLevel_ = LogLevel::INFO;
+Logger* Logger::instance_ = nullptr;
 
-void Logger::init(const std::string& logFilePath) {
-    logFile_.open(logFilePath, std::ios::app);
+Logger& Logger::getInstance() {
+    if (!instance_) {
+        instance_ = new Logger();
+    }
+    return *instance_;
 }
 
-void Logger::setLogLevel(LogLevel level) {
-    currentLevel_ = level;
+Logger::Logger()
+    : minLevel_(Level::INFO)
+    , initialized_(false) {
 }
 
-std::string Logger::getCurrentTimestamp() {
-    time_t now = time(nullptr);
-    struct tm* timeinfo = localtime(&now);
-    char buffer[80];
-    strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", timeinfo);
-    return std::string(buffer);
+Logger::~Logger() {
+    if (logFile_.is_open()) {
+        logFile_.close();
+    }
 }
 
-void Logger::log(LogLevel level, const std::string& message) {
-    if (level < currentLevel_) {
+void Logger::init(const std::string& logFile, Level minLevel) {
+    Logger& logger = getInstance();
+    std::lock_guard<std::mutex> lock(logger.mutex_);
+
+    if (logger.initialized_) {
         return;
     }
 
-    std::string levelStr;
-    switch (level) {
-        case LogLevel::DEBUG:   levelStr = "DEBUG"; break;
-        case LogLevel::INFO:    levelStr = "INFO"; break;
-        case LogLevel::WARNING: levelStr = "WARNING"; break;
-        case LogLevel::ERROR:   levelStr = "ERROR"; break;
+    // Create log directory if it doesn't exist
+    std::filesystem::path logPath(logFile);
+    std::filesystem::create_directories(logPath.parent_path());
+
+    logger.logFile_.open(logFile, std::ios::app);
+    if (!logger.logFile_.is_open()) {
+        std::cerr << "Failed to open log file: " << logFile << std::endl;
+        return;
     }
 
-    std::string logMessage = getCurrentTimestamp() + " [" + levelStr + "] " + message;
-    
-    // Log to console
-    std::cout << logMessage << std::endl;
-    
-    // Log to file if open
-    if (logFile_.is_open()) {
-        logFile_ << logMessage << std::endl;
-        logFile_.flush();
-    }
+    logger.minLevel_ = minLevel;
+    logger.initialized_ = true;
+    logger.info("Logger initialized");
+}
+
+void Logger::setLevel(Level level) {
+    Logger& logger = getInstance();
+    std::lock_guard<std::mutex> lock(logger.mutex_);
+    logger.minLevel_ = level;
 }
 
 void Logger::debug(const std::string& message) {
-    log(LogLevel::DEBUG, message);
+    getInstance().log(Level::DEBUG, message);
 }
 
 void Logger::info(const std::string& message) {
-    log(LogLevel::INFO, message);
+    getInstance().log(Level::INFO, message);
 }
 
 void Logger::warning(const std::string& message) {
-    log(LogLevel::WARNING, message);
+    getInstance().log(Level::WARNING, message);
 }
 
 void Logger::error(const std::string& message) {
-    log(LogLevel::ERROR, message);
+    getInstance().log(Level::ERROR, message);
+}
+
+void Logger::fatal(const std::string& message) {
+    getInstance().log(Level::FATAL, message);
+}
+
+void Logger::log(Level level, const std::string& message) {
+    if (!initialized_ || level < minLevel_) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    std::string logEntry = getTimestamp() + " [" + levelToString(level) + "] " + message;
+    
+    logFile_ << logEntry << std::endl;
+    logFile_.flush();
+
+    // Also output to console for ERROR and FATAL levels
+    if (level >= Level::ERROR) {
+        std::cerr << logEntry << std::endl;
+    }
+}
+
+std::string Logger::getTimestamp() const {
+    auto now = std::chrono::system_clock::now();
+    auto time = std::chrono::system_clock::to_time_t(now);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()) % 1000;
+
+    std::stringstream ss;
+    ss << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S")
+       << '.' << std::setfill('0') << std::setw(3) << ms.count();
+    return ss.str();
+}
+
+std::string Logger::levelToString(Level level) const {
+    switch (level) {
+        case Level::DEBUG:   return "DEBUG";
+        case Level::INFO:    return "INFO";
+        case Level::WARNING: return "WARNING";
+        case Level::ERROR:   return "ERROR";
+        case Level::FATAL:   return "FATAL";
+        default:            return "UNKNOWN";
+    }
 }
 
 } // namespace vmware 

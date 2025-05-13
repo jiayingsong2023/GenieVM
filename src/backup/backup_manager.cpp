@@ -6,235 +6,173 @@
 #include <sstream>
 #include <ctime>
 #include <iomanip>
+#include <type_traits>
+#include <algorithm>
+#include <stdexcept>
 
 namespace vmware {
 
-BackupManager::BackupManager(const std::string& host,
+BackupManager::BackupManager(const std::string& vcenterHost, 
                            const std::string& username,
-                           const std::string& password,
-                           size_t maxConcurrentBackups)
-    : host_(host)
-    , username_(username)
-    , password_(password)
-    , initialized_(false)
-{
-    connection_ = std::make_unique<VMwareConnection>(host, username, password);
-    scheduler_ = std::make_unique<Scheduler>();
-    taskManager_ = std::make_unique<ParallelTaskManager>(maxConcurrentBackups);
+                           const std::string& password)
+    : restClient_(std::make_unique<VSphereRestClient>(vcenterHost, username, password)) {
 }
 
-BackupManager::~BackupManager() {
-    if (initialized_) {
-        stopScheduler();
-        connection_->disconnect();
-    }
-}
+BackupManager::~BackupManager() = default;
 
-bool BackupManager::initialize() {
-    if (!connection_->connect()) {
-        Logger::error("Failed to connect to vCenter");
+bool BackupManager::startBackup(const std::string& vmId, const BackupConfig& config) {
+    std::lock_guard<std::mutex> lock(jobsMutex_);
+    
+    // Check if backup is already running
+    auto it = std::find_if(activeJobs_.begin(), activeJobs_.end(),
+                          [&vmId](const auto& job) { return job->getVMId() == vmId; });
+    if (it != activeJobs_.end()) {
         return false;
     }
-    initialized_ = true;
+
+    // Prepare VM for backup
+    if (!prepareVMForBackup(vmId)) {
+        return false;
+    }
+
+    // Create backup job
+    auto job = std::make_unique<BackupJob>(vmId, config);
+    if (!job->start()) {
+        cleanupVMAfterBackup(vmId);
+        return false;
+    }
+
+    activeJobs_.push_back(std::move(job));
     return true;
 }
 
-bool BackupManager::backupVM(const std::string& vmName,
-                           const std::string& backupDir,
-                           bool useCBT) {
-    if (!initialized_) {
-        Logger::error("BackupManager not initialized");
-        return false;
-    }
-
-    // Create backup directory
-    if (!createBackupDirectory(backupDir)) {
-        return false;
-    }
-
-    // Create snapshot before backup
-    if (!createBackupSnapshot(vmName)) {
-        return false;
-    }
-
-    bool backupSuccess = false;
-    try {
-        // Enable CBT if requested
-        if (useCBT && !enableCBT(vmName)) {
-            Logger::error("Failed to enable CBT for VM: " + vmName);
-            return false;
-        }
-
-        // Get VM disk paths
-        std::vector<std::string> diskPaths;
-        if (!connection_->getVMDiskPaths(vmName, diskPaths)) {
-            Logger::error("Failed to get disk paths for VM: " + vmName);
-            return false;
-        }
-
-        // Create a vector to store futures
-        std::vector<std::future<void>> futures;
-
-        // Backup each disk in parallel
-        for (size_t i = 0; i < diskPaths.size(); ++i) {
-            const auto& diskPath = diskPaths[i];
-            std::string backupPath = backupDir + "/disk" + std::to_string(i) + ".vmdk";
-            
-            // Add backup task to parallel task manager
-            futures.push_back(taskManager_->addTask(
-                "backup_" + vmName + "_disk" + std::to_string(i),
-                [this, diskPath, backupPath, useCBT]() {
-                    DiskBackup diskBackup(diskPath, backupPath);
-                    if (!diskBackup.initialize()) {
-                        throw std::runtime_error("Failed to initialize disk backup for: " + diskPath);
-                    }
-
-                    if (useCBT) {
-                        if (!diskBackup.backupIncremental()) {
-                            throw std::runtime_error("Failed to perform incremental backup for: " + diskPath);
-                        }
-                    } else {
-                        if (!diskBackup.backupFull()) {
-                            throw std::runtime_error("Failed to perform full backup for: " + diskPath);
-                        }
-                    }
-                }
-            ));
-        }
-
-        // Wait for all backup tasks to complete
-        for (auto& future : futures) {
-            future.get();
-        }
-
-        // Disable CBT if it was enabled
-        if (useCBT && !disableCBT(vmName)) {
-            Logger::warning("Failed to disable CBT for VM: " + vmName);
-        }
-
-        backupSuccess = true;
-    } catch (const std::exception& e) {
-        Logger::error("Exception during backup: " + std::string(e.what()));
-    }
-
-    // Remove snapshot after backup (whether successful or not)
-    if (!removeBackupSnapshot(vmName)) {
-        Logger::warning("Failed to remove backup snapshot for VM: " + vmName);
-    }
-
-    return backupSuccess;
-}
-
-bool BackupManager::scheduleBackup(const std::string& vmName,
-                                 const std::string& backupDir,
-                                 const TimePoint& scheduledTime,
-                                 bool useCBT) {
-    if (!initialized_) {
-        Logger::error("BackupManager not initialized");
-        return false;
-    }
-
-    std::string taskId = generateTaskId(vmName);
-    return scheduler_->scheduleTask(taskId, scheduledTime,
-        [this, vmName, backupDir, useCBT]() {
-            backupVM(vmName, backupDir, useCBT);
-        });
-}
-
-bool BackupManager::schedulePeriodicBackup(const std::string& vmName,
-                                         const std::string& backupDir,
-                                         const Duration& interval,
-                                         bool useCBT) {
-    if (!initialized_) {
-        Logger::error("BackupManager not initialized");
-        return false;
-    }
-
-    std::string taskId = generateTaskId(vmName);
-    return scheduler_->schedulePeriodicTask(taskId, interval,
-        [this, vmName, backupDir, useCBT]() {
-            backupVM(vmName, backupDir, useCBT);
-        });
-}
-
-bool BackupManager::cancelScheduledBackup(const std::string& taskId) {
-    return scheduler_->cancelTask(taskId);
-}
-
-void BackupManager::startScheduler() {
-    scheduler_->start();
-}
-
-void BackupManager::stopScheduler() {
-    scheduler_->stop();
-}
-
-std::string BackupManager::generateTaskId(const std::string& vmName) const {
-    time_t now = vmware::thread_utils::get_current_time();
-    std::stringstream ss;
-    ss << "backup_" << vmName << "_" << std::put_time(std::localtime(&now), "%Y%m%d_%H%M%S");
-    return ss.str();
-}
-
-std::vector<std::string> BackupManager::getAvailableVMs() {
-    std::vector<std::string> vms;
-    if (!initialized_) {
-        Logger::error("BackupManager not initialized");
-        return vms;
-    }
-
-    // Implementation to get list of VMs
-    // This would typically use the vSphere API to enumerate VMs
-    return vms;
-}
-
-bool BackupManager::enableCBT(const std::string& vmName) {
-    return connection_->enableCBT(vmName);
-}
-
-bool BackupManager::disableCBT(const std::string& vmName) {
-    return connection_->disableCBT(vmName);
-}
-
-bool BackupManager::createBackupDirectory(const std::string& backupDir) {
-    try {
-        std::filesystem::create_directories(backupDir);
-        return true;
-    } catch (const std::filesystem::filesystem_error& e) {
-        Logger::error("Failed to create backup directory: " + std::string(e.what()));
-        return false;
-    }
-}
-
-void BackupManager::logBackupProgress(const std::string& message) {
-    Logger::info(message);
-}
-
-std::string BackupManager::getBackupSnapshotName(const std::string& vmName) const {
-    return "backup_" + vmName + "_" + std::to_string(std::time(nullptr));
-}
-
-bool BackupManager::createBackupSnapshot(const std::string& vmName) {
-    std::string snapshotName = getBackupSnapshotName(vmName);
-    std::string description = "Snapshot created for backup of " + vmName;
+bool BackupManager::stopBackup(const std::string& vmId) {
+    std::lock_guard<std::mutex> lock(jobsMutex_);
     
-    if (!connection_->createSnapshot(vmName, snapshotName, description)) {
-        Logger::error("Failed to create backup snapshot for VM: " + vmName);
+    auto it = std::find_if(activeJobs_.begin(), activeJobs_.end(),
+                          [&vmId](const auto& job) { return job->getVMId() == vmId; });
+    if (it == activeJobs_.end()) {
         return false;
     }
-    
+
+    if (!(*it)->stop()) {
+        return false;
+    }
+
+    if (!cleanupVMAfterBackup(vmId)) {
+        return false;
+    }
+
+    activeJobs_.erase(it);
     return true;
 }
 
-bool BackupManager::removeBackupSnapshot(const std::string& vmName) {
-    std::string snapshotName = getBackupSnapshotName(vmName);
+bool BackupManager::pauseBackup(const std::string& vmId) {
+    std::lock_guard<std::mutex> lock(jobsMutex_);
     
-    if (!connection_->removeSnapshot(vmName, snapshotName)) {
-        Logger::warning("Failed to remove backup snapshot for VM: " + vmName);
+    auto it = std::find_if(activeJobs_.begin(), activeJobs_.end(),
+                          [&vmId](const auto& job) { return job->getVMId() == vmId; });
+    if (it == activeJobs_.end()) {
         return false;
     }
+
+    return (*it)->pause();
+}
+
+bool BackupManager::resumeBackup(const std::string& vmId) {
+    std::lock_guard<std::mutex> lock(jobsMutex_);
     
+    auto it = std::find_if(activeJobs_.begin(), activeJobs_.end(),
+                          [&vmId](const auto& job) { return job->getVMId() == vmId; });
+    if (it == activeJobs_.end()) {
+        return false;
+    }
+
+    return (*it)->resume();
+}
+
+BackupStatus BackupManager::getBackupStatus(const std::string& vmId) const {
+    std::lock_guard<std::mutex> lock(jobsMutex_);
+    
+    auto it = std::find_if(activeJobs_.begin(), activeJobs_.end(),
+                          [&vmId](const auto& job) { return job->getVMId() == vmId; });
+    if (it == activeJobs_.end()) {
+        return BackupStatus::NOT_FOUND;
+    }
+
+    return (*it)->getStatus();
+}
+
+std::vector<BackupJob> BackupManager::getActiveBackups() const {
+    std::lock_guard<std::mutex> lock(jobsMutex_);
+    std::vector<BackupJob> result;
+    result.reserve(activeJobs_.size());
+    
+    for (const auto& job : activeJobs_) {
+        result.push_back(*job);
+    }
+    
+    return result;
+}
+
+bool BackupManager::setBackupConfig(const std::string& vmId, const BackupConfig& config) {
+    std::lock_guard<std::mutex> lock(jobsMutex_);
+    
+    auto it = std::find_if(activeJobs_.begin(), activeJobs_.end(),
+                          [&vmId](const auto& job) { return job->getVMId() == vmId; });
+    if (it == activeJobs_.end()) {
+        return false;
+    }
+
+    return (*it)->setConfig(config);
+}
+
+BackupConfig BackupManager::getBackupConfig(const std::string& vmId) const {
+    std::lock_guard<std::mutex> lock(jobsMutex_);
+    
+    auto it = std::find_if(activeJobs_.begin(), activeJobs_.end(),
+                          [&vmId](const auto& job) { return job->getVMId() == vmId; });
+    if (it == activeJobs_.end()) {
+        throw std::runtime_error("Backup job not found for VM: " + vmId);
+    }
+
+    return (*it)->getConfig();
+}
+
+bool BackupManager::prepareVMForBackup(const std::string& vmId) {
+    // Get VM info
+    auto vmInfo = restClient_->getVMInfo(vmId);
+    if (vmInfo.is_null()) {
+        return false;
+    }
+
+    // Enable CBT if needed
+    if (!restClient_->enableCBT(vmId)) {
+        return false;
+    }
+
     return true;
+}
+
+bool BackupManager::cleanupVMAfterBackup(const std::string& vmId) {
+    // Disable CBT
+    if (!restClient_->disableCBT(vmId)) {
+        return false;
+    }
+
+    return true;
+}
+
+std::string BackupManager::createBackupSnapshot(const std::string& vmId) {
+    std::string snapshotName = "backup_" + std::to_string(std::time(nullptr));
+    if (!restClient_->createSnapshot(vmId, snapshotName)) {
+        return "";
+    }
+    return snapshotName;
+}
+
+bool BackupManager::removeBackupSnapshot(const std::string& vmId, const std::string& snapshotId) {
+    return restClient_->removeSnapshot(vmId, snapshotId);
 }
 
 } // namespace vmware 

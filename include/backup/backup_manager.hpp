@@ -3,77 +3,43 @@
 #include <string>
 #include <memory>
 #include <vector>
-#include <ctime>
-#include <functional>
 #include <future>
-#include "common/vmware_connection.hpp"
-#include "common/scheduler.hpp"
-#include "common/parallel_task_manager.hpp"
-#include "backup/disk_backup.hpp"
+#include "common/vsphere_rest_client.hpp"
+#include "backup/backup_config.hpp"
+#include "backup/backup_job.hpp"
 
 namespace vmware {
 
 class BackupManager {
 public:
-    using TimePoint = time_t;
-    using Duration = int;  // seconds
-
-    BackupManager(const std::string& host,
+    BackupManager(const std::string& vcenterHost, 
                  const std::string& username,
-                 const std::string& password,
-                 size_t maxConcurrentBackups = 4);
+                 const std::string& password);
     ~BackupManager();
 
-    // Initialize connection to vCenter
-    bool initialize();
-
-    // Perform full backup of a VM
-    bool backupVM(const std::string& vmName,
-                 const std::string& backupDir,
-                 bool useCBT = true);
-
-    // Schedule a backup task
-    bool scheduleBackup(const std::string& vmName,
-                       const std::string& backupDir,
-                       TimePoint scheduledTime,
-                       bool useCBT = true);
-
-    // Schedule a periodic backup task
-    bool schedulePeriodicBackup(const std::string& vmName,
-                              const std::string& backupDir,
-                              Duration interval,
-                              bool useCBT = true);
-
-    // Cancel a scheduled backup
-    bool cancelScheduledBackup(const std::string& taskId);
-
-    // Get list of VMs available for backup
-    std::vector<std::string> getAvailableVMs();
-
-    // Snapshot management
-    bool createBackupSnapshot(const std::string& vmName);
-    bool removeBackupSnapshot(const std::string& vmName);
-    std::string getBackupSnapshotName(const std::string& vmName) const;
-
-    // Start the backup scheduler
-    void startScheduler();
-
-    // Stop the backup scheduler
-    void stopScheduler();
+    // Backup operations
+    bool startBackup(const std::string& vmId, const BackupConfig& config);
+    bool stopBackup(const std::string& vmId);
+    bool pauseBackup(const std::string& vmId);
+    bool resumeBackup(const std::string& vmId);
+    
+    // Status and monitoring
+    BackupStatus getBackupStatus(const std::string& vmId) const;
+    std::vector<BackupJob> getActiveBackups() const;
+    
+    // Configuration
+    bool setBackupConfig(const std::string& vmId, const BackupConfig& config);
+    BackupConfig getBackupConfig(const std::string& vmId) const;
 
 private:
-    std::unique_ptr<VMwareConnection> connection_;
-    std::unique_ptr<Scheduler> scheduler_;
-    std::unique_ptr<ParallelTaskManager> taskManager_;
-    std::string host_;
-    std::string username_;
-    std::string password_;
-    bool initialized_;
+    std::unique_ptr<VSphereRestClient> restClient_;
+    std::vector<std::unique_ptr<BackupJob>> activeJobs_;
+    mutable std::mutex jobsMutex_;
 
-    // Helper methods
-    bool enableCBT(const std::string& vmName);
-    bool disableCBT(const std::string& vmName);
-    bool createBackupDirectory(const std::string& backupDir);
-    void logBackupProgress(const std::string& message);
-    std::string generateTaskId(const std::string& vmName) const;
-}; 
+    bool prepareVMForBackup(const std::string& vmId);
+    bool cleanupVMAfterBackup(const std::string& vmId);
+    std::string createBackupSnapshot(const std::string& vmId);
+    bool removeBackupSnapshot(const std::string& vmId, const std::string& snapshotId);
+};
+
+} // namespace vmware 

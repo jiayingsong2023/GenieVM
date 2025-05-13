@@ -2,6 +2,7 @@
 #include <sstream>
 #include <soapH.h>
 #include <ctime>
+#include <iostream>
 
 namespace vmware {
 
@@ -13,305 +14,69 @@ VSphereManager::VSphereManager(const std::string& host,
     , password_(password)
     , connected_(false)
 {
+    restClient_ = std::make_unique<VSphereRestClient>(host, username, password);
 }
 
 VSphereManager::~VSphereManager() {
-    if (connected_) {
-        disconnect();
-    }
+    disconnect();
 }
 
 bool VSphereManager::connect() {
-    if (!initializeVimProxy()) {
-        return false;
+    if (restClient_->connect()) {
+        connected_ = true;
+        return true;
     }
-
-    if (!login()) {
-        return false;
-    }
-
-    connected_ = true;
-    return true;
+    return false;
 }
 
 void VSphereManager::disconnect() {
     if (connected_) {
-        logout();
+        restClient_->disconnect();
         connected_ = false;
     }
 }
 
 bool VSphereManager::createVM(const std::string& vmName,
-                            const std::string& datastore,
-                            const std::string& resourcePool,
-                            int numCPUs,
-                            int memoryMB) {
+                            const std::string& datastoreName,
+                            const std::string& resourcePoolName) {
     if (!connected_) {
-        Logger::error("Not connected to vCenter");
+        Logger::error("Not connected to vSphere");
         return false;
     }
-
-    // Get datastore reference
-    vim25::ManagedObjectReference datastoreRef;
-    if (!getDatastore(datastore, datastoreRef)) {
-        return false;
-    }
-
-    // Get resource pool reference
-    vim25::ManagedObjectReference poolRef;
-    if (!getResourcePool(resourcePool, poolRef)) {
-        return false;
-    }
-
-    // Create VM configuration
-    vim25::VirtualMachineConfigSpec configSpec;
-    if (!createVirtualMachineConfigSpec(vmName, datastoreRef, poolRef,
-                                      numCPUs, memoryMB, configSpec)) {
-        return false;
-    }
-
-    try {
-        // Create the VM
-        vim25::ManagedObjectReference vmRef = vimProxy_->CreateVM_Task(
-            serviceInstance_,
-            configSpec,
-            poolRef,
-            nullptr
-        );
-
-        // Wait for the task to complete
-        vim25::TaskInfo taskInfo;
-        time_t startTime = std::time(nullptr);
-        while (true) {
-            taskInfo = vimProxy_->ReadTask(vmRef);
-            if (taskInfo.state == "success") {
-                break;
-            } else if (taskInfo.state == "error") {
-                Logger::error("Failed to create VM: " + taskInfo.error->fault->faultString);
-                return false;
-            }
-            // Check if we've been waiting too long (e.g., 5 minutes)
-            if (std::time(nullptr) - startTime > 300) {
-                Logger::error("Timeout waiting for VM creation");
-                return false;
-            }
-            // Small delay to prevent CPU spinning
-            for (volatile int i = 0; i < 1000000; ++i) {}
-        }
-
-        Logger::info("Successfully created VM: " + vmName);
-        return true;
-    } catch (const std::exception& e) {
-        Logger::error("Exception while creating VM: " + std::string(e.what()));
-        return false;
-    }
+    return restClient_->createVM(vmName, datastoreName, resourcePoolName);
 }
 
 bool VSphereManager::attachDisks(const std::string& vmName,
                                const std::vector<std::string>& diskPaths) {
     if (!connected_) {
-        Logger::error("Not connected to vCenter");
+        Logger::error("Not connected to vSphere");
         return false;
     }
-
-    // Get VM reference
-    vim25::ManagedObjectReference vmRef;
-    if (!getVM(vmName, vmRef)) {
-        return false;
-    }
-
-    try {
-        // Create disk device specs
-        std::vector<vim25::VirtualDeviceConfigSpec> deviceSpecs;
-        for (const auto& diskPath : diskPaths) {
-            vim25::VirtualDeviceConfigSpec diskSpec;
-            if (!createVirtualDiskConfigSpec(diskPath, diskSpec)) {
-                return false;
-            }
-            deviceSpecs.push_back(diskSpec);
-        }
-
-        // Create VM config spec for disk attachment
-        vim25::VirtualMachineConfigSpec configSpec;
-        configSpec.deviceChange = deviceSpecs;
-
-        // Reconfigure VM to attach disks
-        vim25::ManagedObjectReference taskRef = vimProxy_->ReconfigVM_Task(
-            vmRef,
-            configSpec
-        );
-
-        // Wait for the task to complete
-        vim25::TaskInfo taskInfo;
-        time_t startTime = std::time(nullptr);
-        while (true) {
-            taskInfo = vimProxy_->ReadTask(taskRef);
-            if (taskInfo.state == "success") {
-                break;
-            } else if (taskInfo.state == "error") {
-                Logger::error("Failed to attach disks: " + taskInfo.error->fault->faultString);
-                return false;
-            }
-            // Check if we've been waiting too long (e.g., 5 minutes)
-            if (std::time(nullptr) - startTime > 300) {
-                Logger::error("Timeout waiting for disk attachment");
-                return false;
-            }
-            // Small delay to prevent CPU spinning
-            for (volatile int i = 0; i < 1000000; ++i) {}
-        }
-
-        Logger::info("Successfully attached " + std::to_string(diskPaths.size()) + 
-                    " disks to VM: " + vmName);
-        return true;
-    } catch (const std::exception& e) {
-        Logger::error("Exception while attaching disks: " + std::string(e.what()));
-        return false;
-    }
+    return restClient_->attachDisks(vmName, diskPaths);
 }
 
-bool VSphereManager::getVM(const std::string& vmName,
-                          vim25::ManagedObjectReference& vmRef) {
-    try {
-        // Create property filter spec
-        vim25::PropertyFilterSpec filterSpec;
-        vim25::ObjectSpec objectSpec;
-        objectSpec.obj = serviceInstance_;
-        objectSpec.skip = false;
-        filterSpec.objectSet.push_back(objectSpec);
-
-        vim25::PropertySpec propertySpec;
-        propertySpec.type = "VirtualMachine";
-        propertySpec.all = false;
-        propertySpec.pathSet.push_back("name");
-        filterSpec.propSet.push_back(propertySpec);
-
-        // Create property collector
-        vim25::ManagedObjectReference propCollector = vimProxy_->CreateFilter(
-            serviceInstance_,
-            filterSpec,
-            false
-        );
-
-        // Get property collector results
-        std::vector<vim25::ObjectContent> results = vimProxy_->WaitForUpdates(
-            propCollector,
-            ""
-        );
-
-        // Clean up property collector
-        vimProxy_->DestroyPropertyFilter(propCollector);
-
-        // Find VM by name
-        for (const auto& objContent : results) {
-            if (objContent.propSet[0].val == vmName) {
-                vmRef = objContent.obj;
-                return true;
-            }
-        }
-
-        Logger::error("VM not found: " + vmName);
-        return false;
-    } catch (const std::exception& e) {
-        Logger::error("Exception while getting VM: " + std::string(e.what()));
+bool VSphereManager::getVM(const std::string& vmName, std::string& vmId) {
+    if (!connected_) {
+        Logger::error("Not connected to vSphere");
         return false;
     }
+    return restClient_->getVM(vmName, vmId);
 }
 
-bool VSphereManager::getDatastore(const std::string& datastoreName,
-                                vim25::ManagedObjectReference& datastoreRef) {
-    try {
-        // Create property filter spec
-        vim25::PropertyFilterSpec filterSpec;
-        vim25::ObjectSpec objectSpec;
-        objectSpec.obj = serviceInstance_;
-        objectSpec.skip = false;
-        filterSpec.objectSet.push_back(objectSpec);
-
-        vim25::PropertySpec propertySpec;
-        propertySpec.type = "Datastore";
-        propertySpec.all = false;
-        propertySpec.pathSet.push_back("name");
-        filterSpec.propSet.push_back(propertySpec);
-
-        // Create property collector
-        vim25::ManagedObjectReference propCollector = vimProxy_->CreateFilter(
-            serviceInstance_,
-            filterSpec,
-            false
-        );
-
-        // Get property collector results
-        std::vector<vim25::ObjectContent> results = vimProxy_->WaitForUpdates(
-            propCollector,
-            ""
-        );
-
-        // Clean up property collector
-        vimProxy_->DestroyPropertyFilter(propCollector);
-
-        // Find datastore by name
-        for (const auto& objContent : results) {
-            if (objContent.propSet[0].val == datastoreName) {
-                datastoreRef = objContent.obj;
-                return true;
-            }
-        }
-
-        Logger::error("Datastore not found: " + datastoreName);
-        return false;
-    } catch (const std::exception& e) {
-        Logger::error("Exception while getting datastore: " + std::string(e.what()));
+bool VSphereManager::getDatastore(const std::string& datastoreName, std::string& datastoreId) {
+    if (!connected_) {
+        Logger::error("Not connected to vSphere");
         return false;
     }
+    return restClient_->getDatastore(datastoreName, datastoreId);
 }
 
-bool VSphereManager::getResourcePool(const std::string& poolName,
-                                   vim25::ManagedObjectReference& poolRef) {
-    try {
-        // Create property filter spec
-        vim25::PropertyFilterSpec filterSpec;
-        vim25::ObjectSpec objectSpec;
-        objectSpec.obj = serviceInstance_;
-        objectSpec.skip = false;
-        filterSpec.objectSet.push_back(objectSpec);
-
-        vim25::PropertySpec propertySpec;
-        propertySpec.type = "ResourcePool";
-        propertySpec.all = false;
-        propertySpec.pathSet.push_back("name");
-        filterSpec.propSet.push_back(propertySpec);
-
-        // Create property collector
-        vim25::ManagedObjectReference propCollector = vimProxy_->CreateFilter(
-            serviceInstance_,
-            filterSpec,
-            false
-        );
-
-        // Get property collector results
-        std::vector<vim25::ObjectContent> results = vimProxy_->WaitForUpdates(
-            propCollector,
-            ""
-        );
-
-        // Clean up property collector
-        vimProxy_->DestroyPropertyFilter(propCollector);
-
-        // Find resource pool by name
-        for (const auto& objContent : results) {
-            if (objContent.propSet[0].val == poolName) {
-                poolRef = objContent.obj;
-                return true;
-            }
-        }
-
-        Logger::error("Resource pool not found: " + poolName);
-        return false;
-    } catch (const std::exception& e) {
-        Logger::error("Exception while getting resource pool: " + std::string(e.what()));
+bool VSphereManager::getResourcePool(const std::string& poolName, std::string& poolId) {
+    if (!connected_) {
+        Logger::error("Not connected to vSphere");
         return false;
     }
+    return restClient_->getResourcePool(poolName, poolId);
 }
 
 bool VSphereManager::initializeVimProxy() {

@@ -1,87 +1,92 @@
-cmake_minimum_required(VERSION 3.10)
 project(vmware-backup-cbt VERSION 1.0.0 LANGUAGES CXX)
 
-# Set C++17 as required
+# Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Add compiler flags
-add_compile_options(-Wall -Wextra)
-
-# Ensure we're using the GNU C++ standard library
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_GLIBCXX_USE_CXX11_ABI=1")
-
-# Find required packages
-find_package(OpenSSL REQUIRED)
-
-# VDDK paths - these should be set by the user
-set(VDDK_ROOT "" CACHE PATH "Path to VDDK installation")
-if(NOT VDDK_ROOT)
-    message(FATAL_ERROR "Please set VDDK_ROOT to the VDDK installation directory")
+# VDDK paths
+set(VDDK_ROOT "/usr/local/vddk" CACHE PATH "Path to VDDK installation")
+if(NOT EXISTS "${VDDK_ROOT}/include/vixDiskLib.h")
+    message(FATAL_ERROR "VDDK include files not found at ${VDDK_ROOT}/include/vixDiskLib.h")
 endif()
 
-# vSphere SDK paths
-set(VSPHERE_SDK_ROOT "" CACHE PATH "Path to vSphere SDK installation")
-if(NOT VSPHERE_SDK_ROOT)
-    message(FATAL_ERROR "Please set VSPHERE_SDK_ROOT to the vSphere SDK installation directory")
+if(NOT EXISTS "${VDDK_ROOT}/lib64/libvixDiskLib.so")
+    message(FATAL_ERROR "VDDK library not found at ${VDDK_ROOT}/lib64/libvixDiskLib.so")
 endif()
 
-# Add subdirectories
-add_subdirectory(src)
+# Include directories
+include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${VDDK_ROOT}/include
+)
 
-# Add executables
+# Library directories
+link_directories(
+    ${VDDK_ROOT}/lib64
+)
+
+# Add source files
+file(GLOB_RECURSE SOURCES 
+    "src/*.cpp"
+)
+
+# Create libraries
+add_library(vmware-backup-lib STATIC ${SOURCES})
+add_library(vmware-restore-lib STATIC ${SOURCES})
+
+# Create executables
 add_executable(vmware-backup src/main/backup_main.cpp)
 add_executable(vmware-restore src/main/restore_main.cpp)
 
-# Set include directories for all targets
+# Set include directories for libraries
 target_include_directories(vmware-backup-lib
     PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${VDDK_ROOT}/include
-    ${VSPHERE_SDK_ROOT}/include
-    ${OPENSSL_INCLUDE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${VDDK_ROOT}/include
 )
 
 target_include_directories(vmware-restore-lib
     PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${VDDK_ROOT}/include
-    ${VSPHERE_SDK_ROOT}/include
-    ${OPENSSL_INCLUDE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${VDDK_ROOT}/include
 )
 
+# Set include directories for executables
 target_include_directories(vmware-backup
-    PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${VDDK_ROOT}/include
 )
 
 target_include_directories(vmware-restore
-    PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-# Link directories
-link_directories(
-    ${VDDK_ROOT}/lib64
-    ${VSPHERE_SDK_ROOT}/lib64
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${VDDK_ROOT}/include
 )
 
 # Link libraries
-target_link_libraries(vmware-backup
-    PRIVATE
-    vmware-backup-lib
+target_link_libraries(vmware-backup-lib
     vixDiskLib
-    vim25
+    pthread
+    dl
     ssl
     crypto
+    z
+)
+
+target_link_libraries(vmware-restore-lib
+    vixDiskLib
+    pthread
+    dl
+    ssl
+    crypto
+    z
+)
+
+target_link_libraries(vmware-backup
+    vmware-backup-lib
 )
 
 target_link_libraries(vmware-restore
-    PRIVATE
     vmware-restore-lib
-    vixDiskLib
-    vim25
-    ssl
-    crypto
 ) 
