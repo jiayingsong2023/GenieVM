@@ -1,8 +1,8 @@
 #include "common/vsphere_manager.hpp"
+#include "common/thread_utils.hpp"
 #include <sstream>
 #include <soapH.h>
 #include <thread>
-#include <chrono>
 
 namespace vmware {
 
@@ -91,7 +91,7 @@ bool VSphereManager::createVM(const std::string& vmName,
                 return false;
             }
             // Sleep for a short time before checking again
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            vmware::thread_utils::sleep_for_seconds(1);
         }
 
         Logger::info("Successfully created VM: " + vmName);
@@ -147,7 +147,7 @@ bool VSphereManager::attachDisks(const std::string& vmName,
                 return false;
             }
             // Sleep for a short time before checking again
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            vmware::thread_utils::sleep_for_seconds(1);
         }
 
         Logger::info("Successfully attached " + std::to_string(diskPaths.size()) + 

@@ -3,7 +3,7 @@
 #include <string>
 #include <memory>
 #include <vector>
-#include <chrono>
+#include <ctime>
 #include <functional>
 #include <future>
 #include "common/vmware_connection.hpp"
@@ -15,6 +15,9 @@ namespace vmware {
 
 class BackupManager {
 public:
+    using TimePoint = time_t;
+    using Duration = int;  // seconds
+
     BackupManager(const std::string& host,
                  const std::string& username,
                  const std::string& password,
@@ -32,13 +35,13 @@ public:
     // Schedule a backup task
     bool scheduleBackup(const std::string& vmName,
                        const std::string& backupDir,
-                       const std::chrono::system_clock::time_point& scheduledTime,
+                       TimePoint scheduledTime,
                        bool useCBT = true);
 
     // Schedule a periodic backup task
     bool schedulePeriodicBackup(const std::string& vmName,
                               const std::string& backupDir,
-                              const std::chrono::seconds& interval,
+                              Duration interval,
                               bool useCBT = true);
 
     // Cancel a scheduled backup

@@ -1,9 +1,11 @@
 #include "backup/backup_manager.hpp"
 #include "common/logger.hpp"
+#include "common/thread_utils.hpp"
 #include <iostream>
 #include <string>
-#include <chrono>
-#include <thread>
+#include <ctime>
+#include <sstream>
+#include <iomanip>
 #include <cstdlib>
 
 void printUsage() {
@@ -21,14 +23,14 @@ void printUsage() {
               << "  --help                    Show this help message\n";
 }
 
-std::chrono::system_clock::time_point parseDateTime(const std::string& dateTimeStr) {
+time_t parseDateTime(const std::string& dateTimeStr) {
     std::tm tm = {};
     std::stringstream ss(dateTimeStr);
     ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
     if (ss.fail()) {
         throw std::runtime_error("Invalid date/time format");
     }
-    return std::chrono::system_clock::from_time_t(std::mktime(&tm));
+    return std::mktime(&tm);
 }
 
 int main(int argc, char* argv[]) {
@@ -93,7 +95,7 @@ int main(int argc, char* argv[]) {
 
         if (!scheduleTime.empty()) {
             // Schedule a one-time backup
-            auto scheduledTime = parseDateTime(scheduleTime);
+            time_t scheduledTime = parseDateTime(scheduleTime);
             vmware::Logger::info("Scheduling backup of VM: " + vmName + " at " + scheduleTime);
             if (!backupManager.scheduleBackup(vmName, backupDir, scheduledTime, useCBT)) {
                 vmware::Logger::error("Failed to schedule backup");
@@ -101,7 +103,7 @@ int main(int argc, char* argv[]) {
             }
         } else if (!intervalStr.empty()) {
             // Schedule a periodic backup
-            auto interval = std::chrono::seconds(std::stoul(intervalStr));
+            int interval = std::stoi(intervalStr);
             vmware::Logger::info("Scheduling periodic backup of VM: " + vmName + 
                                " every " + intervalStr + " seconds");
             if (!backupManager.schedulePeriodicBackup(vmName, backupDir, interval, useCBT)) {
@@ -121,7 +123,7 @@ int main(int argc, char* argv[]) {
 
         // Keep the program running for scheduled backups
         while (true) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            vmware::thread_utils::sleep_for_seconds(1);
         }
     } catch (const std::exception& e) {
         vmware::Logger::error("Exception occurred: " + std::string(e.what()));

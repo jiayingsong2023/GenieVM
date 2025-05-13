@@ -1,11 +1,11 @@
 #include "backup/backup_manager.hpp"
 #include "common/logger.hpp"
+#include "common/thread_utils.hpp"
 #include <filesystem>
 #include <fstream>
 #include <sstream>
-#include <chrono>
-#include <iomanip>
 #include <ctime>
+#include <iomanip>
 
 namespace vmware {
 
@@ -127,7 +127,7 @@ bool BackupManager::backupVM(const std::string& vmName,
 
 bool BackupManager::scheduleBackup(const std::string& vmName,
                                  const std::string& backupDir,
-                                 const std::chrono::system_clock::time_point& scheduledTime,
+                                 const TimePoint& scheduledTime,
                                  bool useCBT) {
     if (!initialized_) {
         Logger::error("BackupManager not initialized");
@@ -143,7 +143,7 @@ bool BackupManager::scheduleBackup(const std::string& vmName,
 
 bool BackupManager::schedulePeriodicBackup(const std::string& vmName,
                                          const std::string& backupDir,
-                                         const std::chrono::seconds& interval,
+                                         const Duration& interval,
                                          bool useCBT) {
     if (!initialized_) {
         Logger::error("BackupManager not initialized");
@@ -170,10 +170,9 @@ void BackupManager::stopScheduler() {
 }
 
 std::string BackupManager::generateTaskId(const std::string& vmName) const {
-    auto now = std::chrono::system_clock::now();
-    auto time = std::chrono::system_clock::to_time_t(now);
+    time_t now = vmware::thread_utils::get_current_time();
     std::stringstream ss;
-    ss << "backup_" << vmName << "_" << std::put_time(std::localtime(&time), "%Y%m%d_%H%M%S");
+    ss << "backup_" << vmName << "_" << std::put_time(std::localtime(&now), "%Y%m%d_%H%M%S");
     return ss.str();
 }
 
