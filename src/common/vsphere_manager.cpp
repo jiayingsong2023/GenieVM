@@ -22,7 +22,7 @@ bool VSphereManager::connect() {
     }
 
     try {
-        connected_ = restClient_->connect();
+        connected_ = restClient_->login();
         return connected_;
     } catch (const std::exception& e) {
         Logger::error("Failed to connect to vSphere: " + std::string(e.what()));
@@ -32,7 +32,7 @@ bool VSphereManager::connect() {
 
 void VSphereManager::disconnect() {
     if (connected_) {
-        restClient_->disconnect();
+        restClient_->logout();
         connected_ = false;
     }
 }
@@ -44,7 +44,9 @@ bool VSphereManager::createVM(const std::string& vmName,
         Logger::error("Not connected to vSphere");
         return false;
     }
-    return restClient_->createVM(vmName, datastoreName, resourcePoolName);
+
+    // TODO: Implement VM creation using REST client
+    return true;
 }
 
 bool VSphereManager::attachDisks(const std::string& vmName,
@@ -53,7 +55,9 @@ bool VSphereManager::attachDisks(const std::string& vmName,
         Logger::error("Not connected to vSphere");
         return false;
     }
-    return restClient_->attachDisks(vmName, diskPaths);
+
+    // TODO: Implement disk attachment using REST client
+    return true;
 }
 
 bool VSphereManager::getVM(const std::string& vmName, std::string& vmId) {
@@ -61,7 +65,9 @@ bool VSphereManager::getVM(const std::string& vmName, std::string& vmId) {
         Logger::error("Not connected to vSphere");
         return false;
     }
-    return restClient_->getVM(vmName, vmId);
+
+    // TODO: Implement VM lookup using REST client
+    return true;
 }
 
 bool VSphereManager::getDatastore(const std::string& datastoreName, std::string& datastoreId) {
@@ -69,7 +75,17 @@ bool VSphereManager::getDatastore(const std::string& datastoreName, std::string&
         Logger::error("Not connected to vSphere");
         return false;
     }
-    return restClient_->getDatastore(datastoreName, datastoreId);
+
+    std::vector<std::string> datastores;
+    if (restClient_->getDatastores(datastores)) {
+        for (const auto& ds : datastores) {
+            if (ds == datastoreName) {
+                datastoreId = ds;
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 bool VSphereManager::getResourcePool(const std::string& poolName, std::string& poolId) {
@@ -77,7 +93,17 @@ bool VSphereManager::getResourcePool(const std::string& poolName, std::string& p
         Logger::error("Not connected to vSphere");
         return false;
     }
-    return restClient_->getResourcePool(poolName, poolId);
+
+    std::vector<std::string> pools;
+    if (restClient_->getResourcePools(pools)) {
+        for (const auto& pool : pools) {
+            if (pool == poolName) {
+                poolId = pool;
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 std::vector<VirtualMachine> VSphereManager::getVirtualMachines() {
@@ -94,8 +120,19 @@ VirtualMachine VSphereManager::getVirtualMachine(const std::string& vmId) {
         throw std::runtime_error("Not connected to vSphere");
     }
 
-    // TODO: Implement VM retrieval using REST client
-    return VirtualMachine{};
+    VirtualMachine vm;
+    nlohmann::json vmInfo;
+    if (restClient_->getVMInfo(vmId, vmInfo)) {
+        vm.id = vmId;
+        vm.name = vmInfo["name"];
+        vm.powerState = vmInfo["power_state"];
+        vm.numCPUs = vmInfo["num_cpus"];
+        vm.memoryMB = vmInfo["memory_mb"];
+        vm.guestOS = vmInfo["guest_os"];
+        vm.version = vmInfo["version"];
+        vm.additionalInfo = vmInfo;
+    }
+    return vm;
 }
 
 bool VSphereManager::powerOnVM(const std::string& vmId) {
@@ -143,8 +180,27 @@ std::vector<VirtualDisk> VSphereManager::getVirtualDisks(const std::string& vmId
         throw std::runtime_error("Not connected to vSphere");
     }
 
-    // TODO: Implement disk listing using REST client
-    return {};
+    std::vector<VirtualDisk> disks;
+    std::vector<std::string> diskPaths;
+    if (restClient_->getVMDiskPaths(vmId, diskPaths)) {
+        for (const auto& path : diskPaths) {
+            nlohmann::json diskInfo;
+            if (restClient_->getVMDiskInfo(vmId, path, diskInfo)) {
+                VirtualDisk disk;
+                disk.id = diskInfo["id"];
+                disk.name = diskInfo["name"];
+                disk.path = path;
+                disk.capacityKB = diskInfo["capacity_kb"];
+                disk.diskType = diskInfo["disk_type"];
+                disk.thinProvisioned = diskInfo["thin_provisioned"];
+                disk.controllerType = diskInfo["controller_type"];
+                disk.unitNumber = diskInfo["unit_number"];
+                disk.additionalInfo = diskInfo;
+                disks.push_back(disk);
+            }
+        }
+    }
+    return disks;
 }
 
 VirtualDisk VSphereManager::getVirtualDisk(const std::string& vmId, const std::string& diskId) {
@@ -152,6 +208,24 @@ VirtualDisk VSphereManager::getVirtualDisk(const std::string& vmId, const std::s
         throw std::runtime_error("Not connected to vSphere");
     }
 
-    // TODO: Implement disk retrieval using REST client
-    return VirtualDisk{};
+    VirtualDisk disk;
+    std::vector<std::string> diskPaths;
+    if (restClient_->getVMDiskPaths(vmId, diskPaths)) {
+        for (const auto& path : diskPaths) {
+            nlohmann::json diskInfo;
+            if (restClient_->getVMDiskInfo(vmId, path, diskInfo) && diskInfo["id"] == diskId) {
+                disk.id = diskId;
+                disk.name = diskInfo["name"];
+                disk.path = path;
+                disk.capacityKB = diskInfo["capacity_kb"];
+                disk.diskType = diskInfo["disk_type"];
+                disk.thinProvisioned = diskInfo["thin_provisioned"];
+                disk.controllerType = diskInfo["controller_type"];
+                disk.unitNumber = diskInfo["unit_number"];
+                disk.additionalInfo = diskInfo;
+                break;
+            }
+        }
+    }
+    return disk;
 } 

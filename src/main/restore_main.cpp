@@ -58,28 +58,25 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Initialize logger
-    vmware::Logger::init();
-
     try {
         // Create and initialize restore manager
-        vmware::RestoreManager restoreManager(host, username, password);
+        RestoreManager restoreManager(host, username, password);
         if (!restoreManager.initialize()) {
-            vmware::Logger::error("Failed to initialize restore manager");
+            std::cerr << "Failed to initialize restore manager" << std::endl;
             return 1;
         }
 
         // Perform restore
-        vmware::Logger::info("Starting restore of VM: " + vmName);
+        std::cout << "Starting restore of VM: " + vmName << std::endl;
         if (restoreManager.restoreVM(vmName, backupDir, datastore, resourcePool)) {
-            vmware::Logger::info("Restore completed successfully");
+            std::cout << "Restore completed successfully" << std::endl;
             return 0;
         } else {
-            vmware::Logger::error("Restore failed");
+            std::cerr << "Restore failed" << std::endl;
             return 1;
         }
     } catch (const std::exception& e) {
-        vmware::Logger::error("Exception occurred: " + std::string(e.what()));
+        std::cerr << "Exception occurred: " << e.what() << std::endl;
         return 1;
     }
 } 

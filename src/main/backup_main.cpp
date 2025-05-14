@@ -1,6 +1,7 @@
 #include "backup/backup_manager.hpp"
 #include "common/logger.hpp"
 #include "common/thread_utils.hpp"
+#include "common/vmware_connection.hpp"
 #include <iostream>
 #include <string>
 #include <ctime>
@@ -79,54 +80,70 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Initialize logger
-    vmware::Logger::init();
-
     try {
-        // Create and initialize backup manager
-        vmware::BackupManager backupManager(host, username, password, maxParallel);
-        if (!backupManager.initialize()) {
-            vmware::Logger::error("Failed to initialize backup manager");
+        // Create VMware connection
+        auto connection = std::make_shared<VMwareConnection>(host, username, password);
+        if (!connection->connect()) {
+            std::cerr << "Failed to connect to vCenter" << std::endl;
             return 1;
         }
 
-        // Start the scheduler
-        backupManager.startScheduler();
+        // Create backup manager
+        BackupManager backupManager(connection);
+
+        // Create backup configuration
+        BackupConfig config;
+        config.vmId = vmName;  // Using vmName as vmId for now
+        config.backupDir = backupDir;
+        config.enableCBT = useCBT;
+        config.maxConcurrentDisks = maxParallel;
 
         if (!scheduleTime.empty()) {
             // Schedule a one-time backup
             time_t scheduledTime = parseDateTime(scheduleTime);
-            vmware::Logger::info("Scheduling backup of VM: " + vmName + " at " + scheduleTime);
-            if (!backupManager.scheduleBackup(vmName, backupDir, scheduledTime, useCBT)) {
-                vmware::Logger::error("Failed to schedule backup");
+            std::cout << "Scheduling backup of VM: " + vmName + " at " + scheduleTime << std::endl;
+            config.scheduled = true;
+            std::tm* tm = std::localtime(&scheduledTime);
+            config.scheduleHour = tm->tm_hour;
+            config.scheduleMinute = tm->tm_min;
+            auto job = backupManager.createBackupJob(config);
+            if (!job) {
+                std::cerr << "Failed to schedule backup" << std::endl;
                 return 1;
             }
         } else if (!intervalStr.empty()) {
             // Schedule a periodic backup
             int interval = std::stoi(intervalStr);
-            vmware::Logger::info("Scheduling periodic backup of VM: " + vmName + 
-                               " every " + intervalStr + " seconds");
-            if (!backupManager.schedulePeriodicBackup(vmName, backupDir, interval, useCBT)) {
-                vmware::Logger::error("Failed to schedule periodic backup");
+            std::cout << "Scheduling periodic backup of VM: " + vmName + 
+                     " every " + intervalStr + " seconds" << std::endl;
+            config.scheduled = true;
+            // Convert interval to hours and minutes
+            config.scheduleHour = interval / 3600;
+            config.scheduleMinute = (interval % 3600) / 60;
+            auto job = backupManager.createBackupJob(config);
+            if (!job) {
+                std::cerr << "Failed to schedule periodic backup" << std::endl;
                 return 1;
             }
         } else {
             // Perform immediate backup
-            vmware::Logger::info("Starting backup of VM: " + vmName);
-            if (!backupManager.backupVM(vmName, backupDir, useCBT)) {
-                vmware::Logger::error("Backup failed");
+            std::cout << "Starting backup of VM: " + vmName << std::endl;
+            config.scheduled = false;
+            auto job = backupManager.createBackupJob(config);
+            if (!job) {
+                std::cerr << "Backup failed" << std::endl;
                 return 1;
             }
-            vmware::Logger::info("Backup completed successfully");
+            std::cout << "Backup completed successfully" << std::endl;
             return 0;
         }
 
         // Keep the program running for scheduled backups
         while (true) {
-            vmware::thread_utils::sleep_for_seconds(1);
+            thread_utils::sleep_for_seconds(1);
         }
     } catch (const std::exception& e) {
-        vmware::Logger::error("Exception occurred: " + std::string(e.what()));
+        std::cerr << "Exception occurred: " << e.what() << std::endl;
         return 1;
     }
 } 

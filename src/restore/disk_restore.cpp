@@ -10,7 +10,11 @@
 DiskRestore::DiskRestore(std::shared_ptr<VMwareConnection> connection)
     : connection_(connection)
     , isRunning_(false)
-    , isPaused_(false) {
+    , isPaused_(false)
+    , initialized_(false)
+    , backupHandle_(nullptr)
+    , targetHandle_(nullptr)
+    , connectionHandle_(nullptr) {
 }
 
 DiskRestore::~DiskRestore() {
@@ -24,6 +28,7 @@ bool DiskRestore::initialize() {
         Logger::error("No connection provided");
         return false;
     }
+    initialized_ = true;
     return true;
 }
 
@@ -105,7 +110,7 @@ bool DiskRestore::restoreFull() {
         return false;
     }
 
-    VixDiskLibDiskInfo diskInfo;
+    VixDiskLibInfo* diskInfo = nullptr;
     if (!getDiskInfo(diskInfo)) {
         return false;
     }
@@ -114,7 +119,7 @@ bool DiskRestore::restoreFull() {
     const uint32_t BUFFER_SIZE = 1024 * 1024; // 1MB buffer
     std::vector<uint8_t> buffer(BUFFER_SIZE);
     
-    uint64_t totalSectors = diskInfo.capacity;
+    uint64_t totalSectors = diskInfo->capacity;
     uint64_t sectorsProcessed = 0;
 
     while (sectorsProcessed < totalSectors) {
@@ -124,10 +129,12 @@ bool DiskRestore::restoreFull() {
         );
 
         if (!readBackupBlocks(sectorsProcessed, sectorsToRead, buffer.data())) {
+            VixDiskLib_FreeInfo(diskInfo);
             return false;
         }
 
         if (!writeTargetBlocks(sectorsProcessed, sectorsToRead, buffer.data())) {
+            VixDiskLib_FreeInfo(diskInfo);
             return false;
         }
 
@@ -138,13 +145,14 @@ bool DiskRestore::restoreFull() {
         Logger::info("Restore progress: " + std::to_string(progress) + "%");
     }
 
+    VixDiskLib_FreeInfo(diskInfo);
     return true;
 }
 
-bool DiskRestore::getDiskInfo(VixDiskLibDiskInfo& diskInfo) {
+bool DiskRestore::getDiskInfo(VixDiskLibInfo*& diskInfo) {
     VixError vixError = VixDiskLib_GetInfo(backupHandle_, &diskInfo);
     if (VIX_FAILED(vixError)) {
-        logError("Failed to get disk info");
+        logError("Failed to get disk info", vixError);
         return false;
     }
     return true;
@@ -152,13 +160,14 @@ bool DiskRestore::getDiskInfo(VixDiskLibDiskInfo& diskInfo) {
 
 bool DiskRestore::openBackupDisk() {
     VixError vixError = VixDiskLib_Open(
+        connectionHandle_,
         backupPath_.c_str(),
         VIXDISKLIB_FLAG_OPEN_UNBUFFERED,
         &backupHandle_
     );
 
     if (VIX_FAILED(vixError)) {
-        logError("Failed to open backup disk");
+        logError("Failed to open backup disk", vixError);
         return false;
     }
 
@@ -166,16 +175,22 @@ bool DiskRestore::openBackupDisk() {
 }
 
 bool DiskRestore::createTargetDisk() {
+    VixDiskLibCreateParams createParams;
+    memset(&createParams, 0, sizeof(createParams));
+    createParams.adapterType = VIXDISKLIB_ADAPTER_SCSI_LSILOGIC;
+    createParams.diskType = VIXDISKLIB_DISK_VMFS_THIN;
+    createParams.capacity = 100 * 1024 * 1024 * 1024ULL; // 100GB in bytes
+
     VixError vixError = VixDiskLib_Create(
+        connectionHandle_,
         targetPath_.c_str(),
-        VIXDISKLIB_ADAPTER_SCSI_LSILOGIC,
-        VIXDISKLIB_DISK_TYPE_THIN,
-        VIXDISKLIB_DISK_SIZE_GB * 100, // 100GB default size
-        &targetHandle_
+        &createParams,
+        nullptr,  // progress callback
+        nullptr   // progress callback data
     );
 
     if (VIX_FAILED(vixError)) {
-        logError("Failed to create target disk");
+        logError("Failed to create target disk", vixError);
         return false;
     }
 
@@ -204,7 +219,7 @@ bool DiskRestore::readBackupBlocks(uint64_t startSector,
     );
 
     if (VIX_FAILED(vixError)) {
-        logError("Failed to read backup blocks");
+        logError("Failed to read backup blocks", vixError);
         return false;
     }
 
@@ -222,17 +237,15 @@ bool DiskRestore::writeTargetBlocks(uint64_t startSector,
     );
 
     if (VIX_FAILED(vixError)) {
-        logError("Failed to write target blocks");
+        logError("Failed to write target blocks", vixError);
         return false;
     }
 
     return true;
 }
 
-void DiskRestore::logError(const std::string& operation) {
-    char* errorMsg = Vix_GetErrorText(VIX_ERROR_CODE, nullptr);
+void DiskRestore::logError(const std::string& operation, VixError vixError) {
+    char* errorMsg = VixDiskLib_GetErrorText(vixError, nullptr);
     Logger::error(operation + ": " + std::string(errorMsg));
-    Vix_FreeErrorText(errorMsg);
+    VixDiskLib_FreeErrorText(errorMsg);
 }
-
-} 
