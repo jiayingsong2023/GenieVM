@@ -8,6 +8,7 @@ project(vmware-backup-cbt VERSION 1.0.0 LANGUAGES CXX)
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Find required packages
 find_package(CURL REQUIRED)
@@ -122,6 +123,13 @@ set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 set(CMAKE_INSTALL_RPATH "${VDDK_ROOT}/lib64")
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
+# Find libstdc++
+find_library(STDCXX_LIBRARY NAMES stdc++ libstdc++ libstdc++.so.6)
+if(NOT STDCXX_LIBRARY)
+    message(FATAL_ERROR "libstdc++ not found")
+endif()
+message(STATUS "Found libstdc++: ${STDCXX_LIBRARY}")
+
 # Link libraries
 target_link_libraries(vmware-backup-lib
     vixDiskLib
@@ -132,7 +140,7 @@ target_link_libraries(vmware-backup-lib
     z
     ${CURL_LIBRARIES}
     nlohmann_json::nlohmann_json
-    stdc++
+    ${STDCXX_LIBRARY}
 )
 
 target_link_libraries(vmware-restore-lib
@@ -144,15 +152,15 @@ target_link_libraries(vmware-restore-lib
     z
     ${CURL_LIBRARIES}
     nlohmann_json::nlohmann_json
-    stdc++
+    ${STDCXX_LIBRARY}
 )
 
 target_link_libraries(vmware-backup
     vmware-backup-lib
-    stdc++
+    ${STDCXX_LIBRARY}
 )
 
 target_link_libraries(vmware-restore
     vmware-restore-lib
-    stdc++
+    ${STDCXX_LIBRARY}
 ) 
