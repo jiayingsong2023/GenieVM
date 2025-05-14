@@ -1,295 +1,130 @@
 #include "common/vmware_connection.hpp"
 #include "common/logger.hpp"
 #include <vixDiskLib.h>
+#include <nlohmann/json.hpp>
+#include <curl/curl.h>
+#include <sstream>
+#include <stdexcept>
+#include <cstring>
 
-VMwareConnection::VMwareConnection(const std::string& host,
-                                 const std::string& username,
-                                 const std::string& password)
-    : host_(host)
-    , username_(username)
-    , password_(password)
-    , hostHandle_(nullptr)
-    , connected_(false)
-    , vddkConnection_(nullptr) {
+using json = nlohmann::json;
+
+VMwareConnection::VMwareConnection(const std::string& host, const std::string& username, const std::string& password)
+    : host_(host), username_(username), password_(password), vddkConnection_(nullptr) {
 }
 
 VMwareConnection::~VMwareConnection() {
-    disconnect();
     disconnectFromDisk();
 }
 
 bool VMwareConnection::connect() {
-    if (connected_) {
-        return true;
-    }
-
-    if (!initializeVDDK()) {
-        return false;
-    }
-
-    // Connect to vCenter
-    VixError vixError = VixHost_Connect(VIX_API_VERSION,
-                                       VIX_SERVICEPROVIDER_VMWARE_SERVER,
-                                       host_.c_str(),
-                                       0,  // port
-                                       username_.c_str(),
-                                       password_.c_str(),
-                                       0,  // options
-                                       VIX_INVALID_HANDLE,  // propertyListHandle
-                                       &hostHandle_);
-
-    if (VIX_FAILED(vixError)) {
-        logError("Failed to connect to vCenter");
-        return false;
-    }
-
-    connected_ = true;
-    Logger::info("Successfully connected to vCenter: " + host_);
+    // Use REST API to connect to vCenter/ESXi
+    // This is a placeholder. Replace with actual REST API call.
+    Logger::info("Connecting to vCenter/ESXi using REST API");
     return true;
 }
 
 void VMwareConnection::disconnect() {
-    if (connected_) {
-        if (hostHandle_ != nullptr) {
-            VixHost_Disconnect(hostHandle_);
-            hostHandle_ = nullptr;
-        }
-        cleanupVDDK();
-        connected_ = false;
-        Logger::info("Disconnected from vCenter");
-    }
+    // Use REST API to disconnect from vCenter/ESXi
+    // This is a placeholder. Replace with actual REST API call.
+    Logger::info("Disconnecting from vCenter/ESXi using REST API");
 }
 
-bool VMwareConnection::getVMHandle(const std::string& vmName, VixHandle& vmHandle) {
-    if (!connected_) {
-        Logger::error("Not connected to vCenter");
-        return false;
-    }
-
-    VixError vixError = VixHost_FindItem(hostHandle_,
-                                        VIX_FIND_RUNNING_VMS,
-                                        vmName.c_str(),
-                                        -1,  // searchType
-                                        &vmHandle);
-
-    if (VIX_FAILED(vixError)) {
-        logError("Failed to get VM handle");
-        return false;
-    }
-
+bool VMwareConnection::getVMHandle(const std::string& vmId, void*& vmHandle) {
+    // Use REST API to get VM handle
+    // This is a placeholder. Replace with actual REST API call.
+    Logger::info("Getting VM handle using REST API");
     return true;
 }
 
-bool VMwareConnection::getVMDiskPaths(const std::string& vmName,
-                                    std::vector<std::string>& diskPaths) {
-    if (!connected_) {
-        Logger::error("Not connected to vCenter");
-        return false;
-    }
-
-    VixHandle vmHandle;
-    if (!getVMHandle(vmName, vmHandle)) {
-        return false;
-    }
-
-    // Get VM configuration
-    VixError vixError = VixVM_GetConfigInfo(vmHandle,
-                                           VIX_VM_CONFIG_NUM_VIRTUAL_DISKS,
-                                           nullptr);
-
-    if (VIX_FAILED(vixError)) {
-        logError("Failed to get VM configuration");
-        return false;
-    }
-
-    // TODO: Implement disk path retrieval
-    // This is a placeholder - you'll need to implement the actual disk path retrieval
-    // using VixVM_GetConfigInfo with appropriate parameters
-
+bool VMwareConnection::getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) {
+    // Use REST API to get VM disk paths
+    // This is a placeholder. Replace with actual REST API call.
+    Logger::info("Getting VM disk paths using REST API");
     return true;
 }
 
-bool VMwareConnection::enableCBT(const std::string& vmName) {
-    if (!connected_) {
-        Logger::error("Not connected to vCenter");
-        return false;
-    }
-
-    VixHandle vmHandle;
-    if (!getVMHandle(vmName, vmHandle)) {
-        return false;
-    }
-
-    VixError vixError = VixVM_EnableChangedBlockTracking(vmHandle);
-    if (VIX_FAILED(vixError)) {
-        logError("Failed to enable CBT");
-        return false;
-    }
-
+bool VMwareConnection::enableCBT(const std::string& vmId) {
+    // Use REST API to enable CBT
+    // This is a placeholder. Replace with actual REST API call.
+    Logger::info("Enabling CBT using REST API");
     return true;
 }
 
-bool VMwareConnection::disableCBT(const std::string& vmName) {
-    if (!connected_) {
-        Logger::error("Not connected to vCenter");
-        return false;
-    }
-
-    VixHandle vmHandle;
-    if (!getVMHandle(vmName, vmHandle)) {
-        return false;
-    }
-
-    VixError vixError = VixVM_DisableChangedBlockTracking(vmHandle);
-    if (VIX_FAILED(vixError)) {
-        logError("Failed to disable CBT");
-        return false;
-    }
-
+bool VMwareConnection::disableCBT(const std::string& vmId) {
+    // Use REST API to disable CBT
+    // This is a placeholder. Replace with actual REST API call.
+    Logger::info("Disabling CBT using REST API");
     return true;
 }
 
-bool VMwareConnection::getCBTInfo(const std::string& vmName, void* blockList) {
-    if (!connected_) {
-        Logger::error("Not connected to vCenter");
-        return false;
-    }
-
-    VixHandle vmHandle;
-    if (!getVMHandle(vmName, vmHandle)) {
-        return false;
-    }
-
-    // TODO: Implement CBT info retrieval
-    // This is a placeholder - you'll need to implement the actual CBT info retrieval
-    // using appropriate VixVM functions
-
+bool VMwareConnection::createSnapshot(const std::string& vmId, const std::string& snapshotName, const std::string& description) {
+    // Use REST API to create snapshot
+    // This is a placeholder. Replace with actual REST API call.
+    Logger::info("Creating snapshot using REST API");
     return true;
 }
 
-bool VMwareConnection::createSnapshot(const std::string& vmName,
-                                    const std::string& snapshotName,
-                                    const std::string& description) {
-    if (!connected_) {
-        Logger::error("Not connected to vCenter");
-        return false;
-    }
-
-    VixHandle vmHandle;
-    if (!getVMHandle(vmName, vmHandle)) {
-        return false;
-    }
-
-    VixError vixError = VixVM_CreateSnapshot(
-        vmHandle,
-        snapshotName.c_str(),
-        description.c_str(),
-        VIX_SNAPSHOT_INCLUDE_MEMORY,
-        VIX_INVALID_HANDLE,
-        nullptr);
-
-    if (VIX_FAILED(vixError)) {
-        logError("Failed to create snapshot");
-        return false;
-    }
-
-    Logger::info("Successfully created snapshot: " + snapshotName);
-    return true;
-}
-
-bool VMwareConnection::removeSnapshot(const std::string& vmName,
-                                    const std::string& snapshotName) {
-    if (!connected_) {
-        Logger::error("Not connected to vCenter");
-        return false;
-    }
-
-    VixHandle vmHandle;
-    if (!getVMHandle(vmName, vmHandle)) {
-        return false;
-    }
-
-    VixHandle snapshotHandle;
-    VixError vixError = VixVM_GetNamedSnapshot(
-        vmHandle,
-        snapshotName.c_str(),
-        &snapshotHandle);
-
-    if (VIX_FAILED(vixError)) {
-        logError("Failed to get snapshot handle");
-        return false;
-    }
-
-    vixError = VixVM_RemoveSnapshot(
-        vmHandle,
-        snapshotHandle,
-        VIX_SNAPSHOT_REMOVE_CHILDREN,
-        nullptr);
-
-    if (VIX_FAILED(vixError)) {
-        logError("Failed to remove snapshot");
-        return false;
-    }
-
-    Logger::info("Successfully removed snapshot: " + snapshotName);
+bool VMwareConnection::removeSnapshot(const std::string& vmId, const std::string& snapshotName) {
+    // Use REST API to remove snapshot
+    // This is a placeholder. Replace with actual REST API call.
+    Logger::info("Removing snapshot using REST API");
     return true;
 }
 
 bool VMwareConnection::initializeVDDK() {
-    VixError vixError = VixDiskLib_InitEx(
-        VIXDISKLIB_VERSION_MAJOR,
-        VIXDISKLIB_VERSION_MINOR,
-        nullptr,  // log callback
-        nullptr,  // warning callback
-        nullptr,  // panic callback
-        nullptr,  // libDir
-        nullptr); // configFile
-
+    VixError vixError = VixDiskLib_Init(1, 1, nullptr, nullptr, nullptr, nullptr);
     if (VIX_FAILED(vixError)) {
         logError("Failed to initialize VDDK");
         return false;
     }
-
     return true;
 }
 
-void VMwareConnection::cleanupVDDK() {
-    VixDiskLib_Exit();
-}
-
-void VMwareConnection::logError(const std::string& operation) {
-    char* errorMsg = nullptr;
-    Vix_GetErrorText(VIX_ERROR_CODE, &errorMsg);
+void VMwareConnection::logError(const std::string& message) {
+    char* errorMsg = VixDiskLib_GetErrorText(vixError_, nullptr);
     if (errorMsg) {
-        Logger::error(operation + ": " + errorMsg);
-        Vix_FreeErrorText(errorMsg);
+        Logger::error(message + ": " + errorMsg);
+        VixDiskLib_FreeErrorText(errorMsg);
     } else {
-        Logger::error(operation + ": Unknown error");
+        Logger::error(message);
     }
 }
 
-bool VMwareConnection::connectToDisk(const std::string& vmxPath) {
-    if (!connected_) {
-        Logger::error("Not connected to vCenter");
-        return false;
-    }
-
+bool VMwareConnection::connectToDisk(const std::string& diskPath) {
     if (!initializeVDDK()) {
         return false;
     }
 
-    VixDiskLibConnectParams connectParams = {0};
-    connectParams.vmxSpec = const_cast<char*>(vmxPath.c_str());
-    connectParams.serverName = const_cast<char*>(host_.c_str());
-    connectParams.credType = VIXDISKLIB_CRED_UID;
-    connectParams.creds.uid.userName = const_cast<char*>(username_.c_str());
-    connectParams.creds.uid.password = const_cast<char*>(password_.c_str());
-    connectParams.thumbPrint = nullptr;
-    connectParams.port = 0;
+    VixDiskLibConnectParams connectParams;
+    memset(&connectParams, 0, sizeof(connectParams));
 
-    VixError error = VixDiskLib_Connect(&connectParams, &vddkConnection_);
-    if (VIX_FAILED(error)) {
-        Logger::error("Failed to connect to VM disk: " + std::string(VixDiskLib_GetErrorText(error, nullptr)));
+    // Allocate memory for strings to avoid const char* issues
+    char* vmxSpec = new char[diskPath.length() + 1];
+    char* serverName = new char[host_.length() + 1];
+    char* userName = new char[username_.length() + 1];
+    char* password = new char[password_.length() + 1];
+
+    strcpy(vmxSpec, diskPath.c_str());
+    strcpy(serverName, host_.c_str());
+    strcpy(userName, username_.c_str());
+    strcpy(password, password_.c_str());
+
+    connectParams.vmxSpec = vmxSpec;
+    connectParams.serverName = serverName;
+    connectParams.creds.uid.userName = userName;
+    connectParams.creds.uid.password = password;
+
+    vixError_ = VixDiskLib_Connect(&connectParams, &vddkConnection_);
+
+    // Clean up allocated memory
+    delete[] vmxSpec;
+    delete[] serverName;
+    delete[] userName;
+    delete[] password;
+
+    if (VIX_FAILED(vixError_)) {
+        logError("Failed to connect to disk");
         return false;
     }
 
@@ -301,4 +136,9 @@ void VMwareConnection::disconnectFromDisk() {
         VixDiskLib_Disconnect(vddkConnection_);
         vddkConnection_ = nullptr;
     }
+    VixDiskLib_Exit();
+}
+
+VixDiskLibConnection VMwareConnection::getVDDKConnection() const {
+    return vddkConnection_;
 } 

@@ -48,9 +48,9 @@ public:
                        const std::string& snapshotName);
 
     // VDDK connection management
-    bool connectToDisk(const std::string& vmxPath);
+    bool connectToDisk(const std::string& diskPath);
     void disconnectFromDisk();
-    VixDiskLibConnection getVixConnection() const { return vddkConnection_; }
+    VixDiskLibConnection getVDDKConnection() const;
 
 private:
     std::string host_;
@@ -61,6 +61,7 @@ private:
 
     // VDDK connection
     VixDiskLibConnection vddkConnection_;
+    VixError vixError_;
 
     // Helper methods
     bool initializeVDDK();

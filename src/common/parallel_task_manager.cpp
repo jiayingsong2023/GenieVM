@@ -132,15 +132,3 @@ std::future<void> ParallelTaskManager::addTask(const std::string& taskId, TaskCa
     queueCondition_.notify_one();
     return future;
 }
-
-std::mutex ParallelTaskManager::taskMutex_;
-std::condition_variable ParallelTaskManager::taskCondition_;
-std::queue<Task> ParallelTaskManager::taskQueue_;
-size_t ParallelTaskManager::activeTaskCount_ = 0;
-std::mutex ParallelTaskManager::queueMutex_;
-std::condition_variable ParallelTaskManager::queueCondition_;
-std::vector<Task> ParallelTaskManager::activeTasks_;
-std::thread ParallelTaskManager::workerThread_;
-bool ParallelTaskManager::isRunning_;
-
-} 

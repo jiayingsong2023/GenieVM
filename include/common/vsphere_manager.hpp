@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 #include "common/logger.hpp"
 #include "common/vsphere_rest_client.hpp"
+#include "common/vsphere_types.hpp"
 
 class VSphereManager {
 public:
@@ -25,6 +26,19 @@ public:
     bool connect();
     void disconnect();
 
+    // VM Management
+    std::vector<VirtualMachine> getVirtualMachines();
+    VirtualMachine getVirtualMachine(const std::string& vmId);
+    bool powerOnVM(const std::string& vmId);
+    bool powerOffVM(const std::string& vmId);
+    bool suspendVM(const std::string& vmId);
+    bool resetVM(const std::string& vmId);
+
+    // Disk Management
+    std::vector<VirtualDisk> getVirtualDisks(const std::string& vmId);
+    VirtualDisk getVirtualDisk(const std::string& vmId, const std::string& diskId);
+
+    // Resource Management
     bool createVM(const std::string& vmName, const std::string& datastoreName, const std::string& resourcePoolName);
     bool attachDisks(const std::string& vmName, const std::vector<std::string>& diskPaths);
     bool getVM(const std::string& vmName, std::string& vmId);
