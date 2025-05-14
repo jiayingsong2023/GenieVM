@@ -7,8 +7,6 @@
 #include <nlohmann/json.hpp>
 #include "common/logger.hpp"
 
-namespace vmware {
-
 class VSphereRestClient {
 public:
     VSphereRestClient(const std::string& host, const std::string& username, const std::string& password);
@@ -80,6 +78,4 @@ private:
     // Error handling
     void handleError(const std::string& operation, const nlohmann::json& response);
     bool checkResponse(const nlohmann::json& response) const;
-};
-
-} // namespace vmware 
+}; 

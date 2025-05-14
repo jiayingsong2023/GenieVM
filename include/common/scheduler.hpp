@@ -6,10 +6,10 @@
 #include <map>
 #include <atomic>
 #include <ctime>
+#include <thread>
+#include <condition_variable>
 #include "common/logger.hpp"
 #include "common/thread_utils.hpp"
-
-namespace vmware {
 
 class Scheduler {
 public:
@@ -50,12 +50,13 @@ private:
         bool isPeriodic;
     };
 
-    std::map<std::string, Task> tasks_;
-    std::mutex tasksMutex_;
-    std::atomic<bool> running_;
-
     void executeTask(const std::string& taskId, const Task& task);
     TimePoint getNextExecutionTime(const Task& task);
-};
+    void schedulerLoop();
 
-} // namespace vmware 
+    std::map<std::string, Task> tasks_;
+    std::mutex tasksMutex_;
+    std::condition_variable condition_;
+    std::thread schedulerThread_;
+    std::atomic<bool> running_;
+}; 

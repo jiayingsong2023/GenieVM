@@ -1,170 +1,142 @@
 #include "backup/backup_job.hpp"
 #include "common/logger.hpp"
-#include <filesystem>
 #include <chrono>
 #include <thread>
+#include <random>
+#include <sstream>
+#include <iomanip>
 
-namespace vmware {
-
-BackupJob::BackupJob(const std::string& vmId, const BackupConfig& config)
-    : vmId_(vmId)
+BackupJob::BackupJob(std::shared_ptr<VMwareConnection> connection, const BackupConfig& config)
+    : connection_(connection)
     , config_(config)
-    , status_(BackupStatus::PENDING)
-    , progress_(0.0)
-    , shouldStop_(false) {
+    , status_(Status::PENDING)
+    , progress_(0.0) {
+    
+    // Generate a unique ID for this job
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(0, 15);
+    std::stringstream ss;
+    ss << std::hex;
+    for (int i = 0; i < 8; i++) {
+        ss << dis(gen);
+    }
+    id_ = ss.str();
 }
 
 BackupJob::~BackupJob() {
-    if (status_ == BackupStatus::RUNNING) {
+    if (status_ == Status::RUNNING) {
         stop();
     }
 }
 
 bool BackupJob::start() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    if (status_ != BackupStatus::PENDING && status_ != BackupStatus::PAUSED) {
+    if (status_ != Status::PENDING && status_ != Status::PAUSED) {
+        setError("Cannot start job in current state");
         return false;
     }
 
-    if (!validateConfig()) {
-        setError("Invalid backup configuration");
-        status_ = BackupStatus::FAILED;
+    if (!prepareVM()) {
         return false;
     }
 
-    // Create backup directory if it doesn't exist
-    try {
-        std::filesystem::create_directories(config_.backupDir);
-    } catch (const std::filesystem::filesystem_error& e) {
-        setError("Failed to create backup directory: " + std::string(e.what()));
-        status_ = BackupStatus::FAILED;
+    snapshotId_ = createSnapshot();
+    if (snapshotId_.empty()) {
+        cleanupVM();
         return false;
     }
 
-    shouldStop_ = false;
-    status_ = BackupStatus::RUNNING;
-    progress_ = 0.0;
-    errorMessage_.clear();
-
-    // Start backup in a separate thread
-    backupFuture_ = std::async(std::launch::async, [this]() {
-        try {
-            runBackup();
-        } catch (const std::exception& e) {
-            setError("Backup failed: " + std::string(e.what()));
-            status_ = BackupStatus::FAILED;
-        }
-    });
-
+    setStatus(Status::RUNNING);
     return true;
 }
 
 bool BackupJob::stop() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    if (status_ != BackupStatus::RUNNING && status_ != BackupStatus::PAUSED) {
+    if (status_ != Status::RUNNING && status_ != Status::PAUSED) {
+        setError("Cannot stop job in current state");
         return false;
     }
 
-    shouldStop_ = true;
-    status_ = BackupStatus::CANCELLED;
-
-    if (backupFuture_.valid()) {
-        backupFuture_.wait();
+    if (!snapshotId_.empty()) {
+        removeSnapshot(snapshotId_);
     }
 
+    cleanupVM();
+    setStatus(Status::COMPLETED);
     return true;
 }
 
 bool BackupJob::pause() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    if (status_ != BackupStatus::RUNNING) {
+    if (status_ != Status::RUNNING) {
+        setError("Cannot pause job in current state");
         return false;
     }
 
-    status_ = BackupStatus::PAUSED;
+    setStatus(Status::PAUSED);
     return true;
 }
 
 bool BackupJob::resume() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    if (status_ != BackupStatus::PAUSED) {
+    if (status_ != Status::PAUSED) {
+        setError("Cannot resume job in current state");
         return false;
     }
 
-    status_ = BackupStatus::RUNNING;
+    setStatus(Status::RUNNING);
     return true;
 }
 
-BackupStatus BackupJob::getStatus() const {
+bool BackupJob::cancel() {
+    if (status_ == Status::COMPLETED || status_ == Status::FAILED) {
+        setError("Cannot cancel job in current state");
+        return false;
+    }
+
+    if (!snapshotId_.empty()) {
+        removeSnapshot(snapshotId_);
+    }
+
+    cleanupVM();
+    setStatus(Status::CANCELLED);
+    return true;
+}
+
+BackupJob::Status BackupJob::getStatus() const {
     return status_;
 }
 
-bool BackupJob::setConfig(const BackupConfig& config) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    if (status_ == BackupStatus::RUNNING) {
-        return false;
-    }
+std::string BackupJob::getId() const {
+    return id_;
+}
 
-    config_ = config;
-    return true;
+BackupConfig BackupJob::getConfig() const {
+    return config_;
+}
+
+std::string BackupJob::getErrorMessage() const {
+    return errorMessage_;
 }
 
 double BackupJob::getProgress() const {
     return progress_;
 }
 
-std::string BackupJob::getErrorMessage() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return errorMessage_;
+bool BackupJob::prepareVM() {
+    // Implementation depends on VMwareConnection
+    return true;
 }
 
-void BackupJob::runBackup() {
-    // TODO: Implement actual backup logic using VDDK
-    // This is a placeholder that simulates backup progress
-    for (int i = 0; i <= 100 && !shouldStop_; ++i) {
-        if (status_ == BackupStatus::PAUSED) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            continue;
-        }
-        
-        updateProgress(i / 100.0);
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-
-    if (shouldStop_) {
-        status_ = BackupStatus::CANCELLED;
-    } else {
-        status_ = BackupStatus::COMPLETED;
-        progress_ = 1.0;
-    }
+bool BackupJob::cleanupVM() {
+    // Implementation depends on VMwareConnection
+    return true;
 }
 
-bool BackupJob::validateConfig() const {
-    if (config_.backupDir.empty()) {
-        return false;
-    }
+std::string BackupJob::createSnapshot() {
+    // Implementation depends on VMwareConnection
+    return "snapshot-123";  // Placeholder
+}
 
-    if (config_.compressionLevel < 0 || config_.compressionLevel > 9) {
-        return false;
-    }
-
-    if (config_.maxConcurrentDisks < 1) {
-        return false;
-    }
-
-    if (config_.retentionDays < 0) {
-        return false;
-    }
-
-    if (config_.maxBackups < 1) {
-        return false;
-    }
-
+bool BackupJob::removeSnapshot(const std::string& snapshotId) {
+    // Implementation depends on VMwareConnection
     return true;
 }
 
@@ -172,10 +144,11 @@ void BackupJob::updateProgress(double progress) {
     progress_ = progress;
 }
 
-void BackupJob::setError(const std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    errorMessage_ = error;
-    Logger::error("Backup error for VM " + vmId_ + ": " + error);
+void BackupJob::setStatus(Status status) {
+    status_ = status;
 }
 
-} // namespace vmware 
+void BackupJob::setError(const std::string& error) {
+    errorMessage_ = error;
+    Logger::error("Backup job " + id_ + " error: " + error);
+} 

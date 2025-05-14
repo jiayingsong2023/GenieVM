@@ -2,13 +2,21 @@
 
 #include <string>
 #include <memory>
+#include <vector>
+#include <functional>
 #include <mutex>
-#include <atomic>
+#include <condition_variable>
+#include <thread>
+#include <queue>
 #include <future>
-#include "backup/backup_config.hpp"
+#include <atomic>
+#include <chrono>
+#include <stdexcept>
+#include <filesystem>
+#include <nlohmann/json.hpp>
 #include "common/logger.hpp"
-
-namespace vmware {
+#include "common/vsphere_manager.hpp"
+#include "backup/backup_config.hpp"
 
 enum class RestoreStatus {
     NOT_FOUND,
@@ -54,6 +62,5 @@ private:
     mutable std::mutex mutex_;
     std::future<void> restoreFuture_;
     std::atomic<bool> cancelled_;
-};
-
-} // namespace vmware 
+    std::shared_ptr<VSphereRestClient> vsphereClient_;
+}; 

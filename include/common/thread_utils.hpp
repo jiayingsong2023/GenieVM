@@ -3,7 +3,6 @@
 #include <ctime>
 #include <unistd.h>  // for sleep()
 
-namespace vmware {
 namespace thread_utils {
 
 // Sleep for specified number of seconds
@@ -22,4 +21,3 @@ inline bool has_time_passed(time_t target_time) {
 }
 
 } // namespace thread_utils
-} // namespace vmware

@@ -2,43 +2,29 @@
 
 #include <string>
 #include <memory>
-#include <vixDiskLib.h>
-#include "common/logger.hpp"
-
-namespace vmware {
+#include <functional>
+#include "common/vmware_connection.hpp"
 
 class DiskRestore {
 public:
-    DiskRestore(const std::string& backupPath,
-               const std::string& targetPath);
+    using ProgressCallback = std::function<void(double)>;
+
+    DiskRestore(std::shared_ptr<VMwareConnection> connection);
     ~DiskRestore();
 
-    // Initialize VDDK connection
     bool initialize();
-
-    // Perform full disk restore
-    bool restoreFull();
-
-    // Get disk information
-    bool getDiskInfo(VixDiskLibDiskInfo& diskInfo);
+    bool startRestore(const std::string& vmId, const std::string& backupPath);
+    bool stopRestore();
+    bool pauseRestore();
+    bool resumeRestore();
+    bool verifyRestore();
+    void setProgressCallback(ProgressCallback callback);
 
 private:
+    std::shared_ptr<VMwareConnection> connection_;
+    std::string vmId_;
     std::string backupPath_;
-    std::string targetPath_;
-    VixDiskLibConnection connection_;
-    VixDiskLibHandle backupHandle_;
-    VixDiskLibHandle targetHandle_;
-    bool initialized_;
-
-    // Helper methods
-    bool openBackupDisk();
-    bool createTargetDisk();
-    void closeDisks();
-    bool readBackupBlocks(uint64_t startSector,
-                         uint32_t numSectors,
-                         uint8_t* buffer);
-    bool writeTargetBlocks(uint64_t startSector,
-                          uint32_t numSectors,
-                          const uint8_t* buffer);
-    void logError(const std::string& operation);
+    ProgressCallback progressCallback_;
+    bool isRunning_;
+    bool isPaused_;
 }; 

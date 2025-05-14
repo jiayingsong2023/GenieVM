@@ -1,44 +1,101 @@
 #include "restore/disk_restore.hpp"
 #include "common/logger.hpp"
+#include <filesystem>
+#include <fstream>
+#include <vector>
 #include <cstring>
+#include <chrono>
+#include <thread>
 
-namespace vmware {
-
-DiskRestore::DiskRestore(const std::string& backupPath,
-                        const std::string& targetPath)
-    : backupPath_(backupPath)
-    , targetPath_(targetPath)
-    , initialized_(false)
-{
+DiskRestore::DiskRestore(std::shared_ptr<VMwareConnection> connection)
+    : connection_(connection)
+    , isRunning_(false)
+    , isPaused_(false) {
 }
 
 DiskRestore::~DiskRestore() {
-    if (initialized_) {
-        closeDisks();
+    if (isRunning_) {
+        stopRestore();
     }
 }
 
 bool DiskRestore::initialize() {
-    VixError vixError = VIX_OK;
-    
-    // Initialize VDDK
-    vixError = VixDiskLib_Init(1, 1, NULL, NULL, NULL, NULL);
-    if (VIX_FAILED(vixError)) {
-        logError("Failed to initialize VDDK");
+    if (!connection_) {
+        Logger::error("No connection provided");
+        return false;
+    }
+    return true;
+}
+
+bool DiskRestore::startRestore(const std::string& vmId, const std::string& backupPath) {
+    if (isRunning_) {
+        Logger::error("Restore already in progress");
         return false;
     }
 
-    // Open backup disk
-    if (!openBackupDisk()) {
+    if (!std::filesystem::exists(backupPath)) {
+        Logger::error("Backup path does not exist: " + backupPath);
         return false;
     }
 
-    // Create target disk
-    if (!createTargetDisk()) {
+    vmId_ = vmId;
+    backupPath_ = backupPath;
+    isRunning_ = true;
+    isPaused_ = false;
+
+    // TODO: Implement actual restore logic using VMwareConnection
+    if (progressCallback_) {
+        progressCallback_(0.0);
+    }
+
+    return true;
+}
+
+bool DiskRestore::stopRestore() {
+    if (!isRunning_) {
+        return true;
+    }
+
+    isRunning_ = false;
+    isPaused_ = false;
+
+    // TODO: Implement cleanup logic
+    if (progressCallback_) {
+        progressCallback_(1.0);
+    }
+
+    return true;
+}
+
+bool DiskRestore::pauseRestore() {
+    if (!isRunning_ || isPaused_) {
         return false;
     }
 
-    initialized_ = true;
+    isPaused_ = true;
+    return true;
+}
+
+bool DiskRestore::resumeRestore() {
+    if (!isRunning_ || !isPaused_) {
+        return false;
+    }
+
+    isPaused_ = false;
+    return true;
+}
+
+void DiskRestore::setProgressCallback(ProgressCallback callback) {
+    progressCallback_ = callback;
+}
+
+bool DiskRestore::verifyRestore() {
+    if (!isRunning_) {
+        Logger::error("No restore in progress");
+        return false;
+    }
+
+    // TODO: Implement restore verification
     return true;
 }
 
@@ -178,4 +235,4 @@ void DiskRestore::logError(const std::string& operation) {
     Vix_FreeErrorText(errorMsg);
 }
 
-} // namespace vmware 
+} 

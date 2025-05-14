@@ -85,6 +85,12 @@ target_include_directories(vmware-restore
         ${CURL_INCLUDE_DIRS}
 )
 
+# Set RPATH settings
+set(CMAKE_SKIP_BUILD_RPATH FALSE)
+set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+set(CMAKE_INSTALL_RPATH "${VDDK_ROOT}/lib64")
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+
 # Link libraries
 target_link_libraries(vmware-backup-lib
     vixDiskLib

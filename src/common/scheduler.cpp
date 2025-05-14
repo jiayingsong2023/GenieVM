@@ -1,11 +1,10 @@
 #include "common/scheduler.hpp"
 #include "common/logger.hpp"
-#include "common/thread_utils.hpp"
-#include <algorithm>
+#include <chrono>
+#include <thread>
 
-namespace vmware {
-
-Scheduler::Scheduler() : running_(false) {}
+Scheduler::Scheduler() : running_(false) {
+}
 
 Scheduler::~Scheduler() {
     stop();
@@ -18,7 +17,7 @@ bool Scheduler::scheduleTask(const std::string& taskId,
     
     Task task;
     task.scheduledTime = scheduledTime;
-    task.interval = 0;  // Non-periodic task
+    task.interval = 0;
     task.callback = callback;
     task.isPeriodic = false;
     
@@ -30,10 +29,14 @@ bool Scheduler::scheduleTask(const std::string& taskId,
 bool Scheduler::schedulePeriodicTask(const std::string& taskId,
                                    Duration interval,
                                    TaskCallback callback) {
+    if (interval <= 0) {
+        return false;
+    }
+
     std::lock_guard<std::mutex> lock(tasksMutex_);
     
     Task task;
-    task.scheduledTime = thread_utils::get_current_time() + interval;
+    task.scheduledTime = std::time(nullptr) + interval;
     task.interval = interval;
     task.callback = callback;
     task.isPeriodic = true;
@@ -52,7 +55,7 @@ void Scheduler::start() {
     if (running_) {
         return;
     }
-    
+
     running_ = true;
     schedulerThread_ = std::thread(&Scheduler::schedulerLoop, this);
 }
@@ -61,17 +64,50 @@ void Scheduler::stop() {
     if (!running_) {
         return;
     }
-    
+
     {
         std::lock_guard<std::mutex> lock(tasksMutex_);
         running_ = false;
     }
-    
     condition_.notify_one();
     
     if (schedulerThread_.joinable()) {
         schedulerThread_.join();
     }
+}
+
+void Scheduler::processTasks() {
+    std::lock_guard<std::mutex> lock(tasksMutex_);
+    
+    auto now = std::time(nullptr);
+    auto it = tasks_.begin();
+    
+    while (it != tasks_.end()) {
+        if (it->second.scheduledTime <= now) {
+            executeTask(it->first, it->second);
+            
+            if (it->second.isPeriodic) {
+                it->second.scheduledTime = getNextExecutionTime(it->second);
+                ++it;
+            } else {
+                it = tasks_.erase(it);
+            }
+        } else {
+            ++it;
+        }
+    }
+}
+
+void Scheduler::executeTask(const std::string& taskId, const Task& task) {
+    try {
+        task.callback();
+    } catch (const std::exception& e) {
+        Logger::error("Task " + taskId + " failed: " + e.what());
+    }
+}
+
+Scheduler::TimePoint Scheduler::getNextExecutionTime(const Task& task) {
+    return std::time(nullptr) + task.interval;
 }
 
 void Scheduler::schedulerLoop() {
@@ -83,55 +119,16 @@ void Scheduler::schedulerLoop() {
             continue;
         }
         
-        // Find the next task to execute
-        auto now = thread_utils::get_current_time();
-        auto nextTask = std::min_element(tasks_.begin(), tasks_.end(),
-            [](const auto& a, const auto& b) {
-                return a.second.scheduledTime < b.second.scheduledTime;
-            });
+        auto now = std::time(nullptr);
+        auto nextTask = tasks_.begin();
+        auto waitTime = nextTask->second.scheduledTime - now;
         
-        if (nextTask != tasks_.end()) {
-            if (thread_utils::has_time_passed(nextTask->second.scheduledTime)) {
-                // Execute the task
-                Task task = nextTask->second;
-                lock.unlock();
-                executeTask(nextTask->first, task);
-                lock.lock();
-                
-                // Update or remove the task
-                if (task.isPeriodic) {
-                    task.scheduledTime = thread_utils::get_current_time() + task.interval;
-                    tasks_[nextTask->first] = task;
-                } else {
-                    tasks_.erase(nextTask);
-                }
-            } else {
-                // Wait until the next task is due
-                time_t waitTime = nextTask->second.scheduledTime - now;
-                if (waitTime > 0) {
-                    // Sleep in small intervals to allow for cancellation
-                    while (waitTime > 0 && running_) {
-                        lock.unlock();
-                        thread_utils::sleep_for_seconds(1);
-                        lock.lock();
-                        waitTime--;
-                    }
-                }
-            }
+        if (waitTime > 0) {
+            condition_.wait_for(lock, std::chrono::seconds(waitTime),
+                              [this] { return !running_; });
+            continue;
         }
+        
+        processTasks();
     }
-}
-
-void Scheduler::executeTask(const std::string& taskId, const Task& task) {
-    try {
-        task.callback();
-    } catch (const std::exception& e) {
-        Logger::error("Error executing task " + taskId + ": " + e.what());
-    }
-}
-
-TimePoint Scheduler::getNextExecutionTime(const Task& task) {
-    return thread_utils::get_current_time() + task.interval;
-}
-
-} // namespace vmware 
+} 

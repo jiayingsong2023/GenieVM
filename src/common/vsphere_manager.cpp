@@ -1,88 +1,149 @@
 #include "common/vsphere_manager.hpp"
+#include "common/logger.hpp"
 #include <sstream>
 #include <soapH.h>
 #include <ctime>
 #include <iostream>
+#include <stdexcept>
 
-namespace vmware {
-
-VSphereManager::VSphereManager(const std::string& host,
-                             const std::string& username,
-                             const std::string& password)
-    : host_(host)
-    , username_(username)
-    , password_(password)
-    , connected_(false)
-{
-    restClient_ = std::make_unique<VSphereRestClient>(host, username, password);
+VSphereManager::VSphereManager(std::shared_ptr<VMwareConnection> connection)
+    : connection_(connection) {
 }
 
 VSphereManager::~VSphereManager() {
-    disconnect();
 }
 
-bool VSphereManager::connect() {
-    if (restClient_->connect()) {
-        connected_ = true;
-        return true;
+bool VSphereManager::initialize() {
+    if (!connection_) {
+        Logger::error("No connection provided");
+        return false;
     }
-    return false;
+    return true;
 }
 
-void VSphereManager::disconnect() {
-    if (connected_) {
-        restClient_->disconnect();
-        connected_ = false;
+std::vector<VirtualMachine> VSphereManager::getVirtualMachines() {
+    if (!connection_) {
+        throw std::runtime_error("No connection provided");
     }
+
+    // TODO: Implement VM listing using VMwareConnection
+    return {};
+}
+
+VirtualMachine VSphereManager::getVirtualMachine(const std::string& vmId) {
+    if (!connection_) {
+        throw std::runtime_error("No connection provided");
+    }
+
+    // TODO: Implement VM retrieval using VMwareConnection
+    return VirtualMachine{};
+}
+
+bool VSphereManager::powerOnVM(const std::string& vmId) {
+    if (!connection_) {
+        Logger::error("No connection provided");
+        return false;
+    }
+
+    // TODO: Implement power on using VMwareConnection
+    return true;
+}
+
+bool VSphereManager::powerOffVM(const std::string& vmId) {
+    if (!connection_) {
+        Logger::error("No connection provided");
+        return false;
+    }
+
+    // TODO: Implement power off using VMwareConnection
+    return true;
+}
+
+bool VSphereManager::suspendVM(const std::string& vmId) {
+    if (!connection_) {
+        Logger::error("No connection provided");
+        return false;
+    }
+
+    // TODO: Implement suspend using VMwareConnection
+    return true;
+}
+
+bool VSphereManager::resetVM(const std::string& vmId) {
+    if (!connection_) {
+        Logger::error("No connection provided");
+        return false;
+    }
+
+    // TODO: Implement reset using VMwareConnection
+    return true;
+}
+
+std::vector<VirtualDisk> VSphereManager::getVirtualDisks(const std::string& vmId) {
+    if (!connection_) {
+        throw std::runtime_error("No connection provided");
+    }
+
+    // TODO: Implement disk listing using VMwareConnection
+    return {};
+}
+
+VirtualDisk VSphereManager::getVirtualDisk(const std::string& vmId, const std::string& diskId) {
+    if (!connection_) {
+        throw std::runtime_error("No connection provided");
+    }
+
+    // TODO: Implement disk retrieval using VMwareConnection
+    return VirtualDisk{};
 }
 
 bool VSphereManager::createVM(const std::string& vmName,
                             const std::string& datastoreName,
                             const std::string& resourcePoolName) {
-    if (!connected_) {
-        Logger::error("Not connected to vSphere");
+    if (!connection_) {
+        Logger::error("No connection provided");
         return false;
     }
-    return restClient_->createVM(vmName, datastoreName, resourcePoolName);
+    return connection_->createVM(vmName, datastoreName, resourcePoolName);
 }
 
 bool VSphereManager::attachDisks(const std::string& vmName,
                                const std::vector<std::string>& diskPaths) {
-    if (!connected_) {
-        Logger::error("Not connected to vSphere");
+    if (!connection_) {
+        Logger::error("No connection provided");
         return false;
     }
-    return restClient_->attachDisks(vmName, diskPaths);
+    return connection_->attachDisks(vmName, diskPaths);
 }
 
 bool VSphereManager::getVM(const std::string& vmName, std::string& vmId) {
-    if (!connected_) {
-        Logger::error("Not connected to vSphere");
+    if (!connection_) {
+        Logger::error("No connection provided");
         return false;
     }
-    return restClient_->getVM(vmName, vmId);
+    return connection_->getVM(vmName, vmId);
 }
 
 bool VSphereManager::getDatastore(const std::string& datastoreName, std::string& datastoreId) {
-    if (!connected_) {
-        Logger::error("Not connected to vSphere");
+    if (!connection_) {
+        Logger::error("No connection provided");
         return false;
     }
-    return restClient_->getDatastore(datastoreName, datastoreId);
+    return connection_->getDatastore(datastoreName, datastoreId);
 }
 
 bool VSphereManager::getResourcePool(const std::string& poolName, std::string& poolId) {
-    if (!connected_) {
-        Logger::error("Not connected to vSphere");
+    if (!connection_) {
+        Logger::error("No connection provided");
         return false;
     }
-    return restClient_->getResourcePool(poolName, poolId);
+    return connection_->getResourcePool(poolName, poolId);
 }
 
 bool VSphereManager::initializeVimProxy() {
     try {
         vimProxy_ = std::make_unique<vim25::VimBindingProxy>();
-        std::string url = "https://" + host_ + "/sdk";
+        std::string url = "https://" + connection_->getHost() + "/sdk";
         vimProxy_->soap_endpoint = url.c_str();
         vimProxy_->soap_ssl_verifypeer = false; // For development only
         vimProxy_->soap_ssl_verifyhost = false; // For development only
@@ -102,8 +163,8 @@ bool VSphereManager::login() {
 
         vim25::UserSession session = vimProxy_->Login(
             serviceContent.sessionManager,
-            username_,
-            password_,
+            connection_->getUsername(),
+            connection_->getPassword(),
             nullptr
         );
 
@@ -189,6 +250,4 @@ bool VSphereManager::createVirtualDiskConfigSpec(
 
 void VSphereManager::logError(const std::string& operation) {
     Logger::error(operation);
-}
-
-} // namespace vmware 
+} 

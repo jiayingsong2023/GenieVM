@@ -7,20 +7,19 @@
 #include <iomanip>
 #include <sstream>
 
-namespace vmware {
+enum class LogLevel {
+    DEBUG,
+    INFO,
+    WARNING,
+    ERROR,
+    FATAL
+};
 
 class Logger {
 public:
-    enum class Level {
-        DEBUG,
-        INFO,
-        WARNING,
-        ERROR,
-        FATAL
-    };
-
-    static void init(const std::string& logFile, Level minLevel = Level::INFO);
-    static void setLevel(Level level);
+    static bool initialize(const std::string& logPath, LogLevel level = LogLevel::INFO);
+    static void shutdown();
+    static void setLogLevel(LogLevel level);
     
     static void debug(const std::string& message);
     static void info(const std::string& message);
@@ -29,21 +28,11 @@ public:
     static void fatal(const std::string& message);
 
 private:
-    static Logger& getInstance();
-    
-    Logger();
-    ~Logger();
-    
-    void log(Level level, const std::string& message);
-    std::string getTimestamp() const;
-    std::string levelToString(Level level) const;
-    
-    std::ofstream logFile_;
-    Level minLevel_;
-    std::mutex mutex_;
-    bool initialized_;
-    
-    static Logger* instance_;
-};
+    static void log(LogLevel level, const std::string& message);
+    static std::string levelToString(LogLevel level);
 
-} // namespace vmware 
+    static std::mutex mutex_;
+    static std::ofstream logFile_;
+    static LogLevel currentLevel_;
+    static bool initialized_;
+}; 

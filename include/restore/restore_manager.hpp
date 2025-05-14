@@ -3,10 +3,21 @@
 #include <string>
 #include <memory>
 #include <vector>
-#include "common/vmware_connection.hpp"
+#include <functional>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <queue>
+#include <future>
+#include <atomic>
+#include <chrono>
+#include <stdexcept>
+#include <filesystem>
+#include <nlohmann/json.hpp>
+#include "common/logger.hpp"
+#include "common/vsphere_manager.hpp"
+#include "backup/restore_job.hpp"
 #include "restore/disk_restore.hpp"
-
-namespace vmware {
 
 class RestoreManager {
 public:

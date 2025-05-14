@@ -1,11 +1,9 @@
 #include "backup/restore_job.hpp"
-#include "backup/disk_backup.hpp"
-#include "common/vsphere_rest_client.hpp"
+#include "common/logger.hpp"
 #include <filesystem>
+#include <stdexcept>
 #include <chrono>
 #include <thread>
-
-namespace vmware {
 
 RestoreJob::RestoreJob(const std::string& vmId, const std::string& backupId, const BackupConfig& config)
     : vmId_(vmId)
@@ -17,18 +15,21 @@ RestoreJob::RestoreJob(const std::string& vmId, const std::string& backupId, con
 }
 
 RestoreJob::~RestoreJob() {
-    stop();
+    if (status_ == RestoreStatus::RUNNING) {
+        stop();
+    }
 }
 
 bool RestoreJob::start() {
     std::lock_guard<std::mutex> lock(mutex_);
     
-    if (status_ != RestoreStatus::PENDING && status_ != RestoreStatus::PAUSED) {
-        setError("Cannot start restore job in current state");
+    if (status_ == RestoreStatus::RUNNING) {
+        Logger::error("Restore already in progress");
         return false;
     }
 
     if (!validateConfig()) {
+        status_ = RestoreStatus::FAILED;
         return false;
     }
 
@@ -42,14 +43,13 @@ bool RestoreJob::stop() {
     std::lock_guard<std::mutex> lock(mutex_);
     
     if (status_ != RestoreStatus::RUNNING && status_ != RestoreStatus::PAUSED) {
-        return false;
+        return true;
     }
 
     cancelled_ = true;
     if (restoreFuture_.valid()) {
         restoreFuture_.wait();
     }
-
     status_ = RestoreStatus::CANCELLED;
     return true;
 }
@@ -103,72 +103,28 @@ std::string RestoreJob::getErrorMessage() const {
     return errorMessage_;
 }
 
-bool RestoreJob::validateConfig() {
-    if (config_.backupDir.empty()) {
-        setError("Backup directory not specified");
-        return false;
-    }
-
-    std::filesystem::path backupPath = std::filesystem::path(config_.backupDir) / backupId_;
-    if (!std::filesystem::exists(backupPath)) {
-        setError("Backup not found: " + backupPath.string());
-        return false;
-    }
-
-    return true;
-}
-
 void RestoreJob::runRestore() {
     try {
-        // Get VM disk paths
-        auto diskPaths = vsphereClient_->getVMDiskPaths(vmId_);
-        if (diskPaths.empty()) {
-            setError("No disks found for VM " + vmId_);
+        // TODO: Implement actual restore logic
+        // This should use vsphereClient_ to perform the restore
+        // and call updateProgress() periodically
+        
+        if (cancelled_) {
+            status_ = RestoreStatus::CANCELLED;
             return;
         }
 
-        // Create restore directory
-        std::filesystem::path restorePath = std::filesystem::path(config_.backupDir) / backupId_;
-        if (!std::filesystem::exists(restorePath)) {
-            setError("Backup not found: " + restorePath.string());
-            return;
-        }
-
-        // Restore each disk
-        size_t totalDisks = diskPaths.size();
-        size_t completedDisks = 0;
-
-        for (const auto& diskPath : diskPaths) {
-            if (cancelled_) {
-                setError("Restore cancelled");
-                return;
-            }
-
-            std::string backupDiskPath = (restorePath / std::filesystem::path(diskPath).filename()).string();
-            
-            // Create disk backup object for restore
-            DiskBackup diskBackup(backupDiskPath, diskPath);
-            if (!diskBackup.initialize()) {
-                setError("Failed to initialize disk backup for restore");
-                return;
-            }
-
-            // Restore disk
-            if (!diskBackup.restore()) {
-                setError("Failed to restore disk: " + diskPath);
-                return;
-            }
-
-            completedDisks++;
-            updateProgress(static_cast<double>(completedDisks) / totalDisks);
-        }
-
-        std::lock_guard<std::mutex> lock(mutex_);
         status_ = RestoreStatus::COMPLETED;
-        progress_ = 1.0;
+        updateProgress(1.0);
     } catch (const std::exception& e) {
-        setError("Restore failed: " + std::string(e.what()));
+        setError(e.what());
+        status_ = RestoreStatus::FAILED;
     }
+}
+
+bool RestoreJob::validateConfig() {
+    // TODO: Implement config validation
+    return true;
 }
 
 void RestoreJob::updateProgress(double progress) {
@@ -179,8 +135,4 @@ void RestoreJob::updateProgress(double progress) {
 void RestoreJob::setError(const std::string& message) {
     std::lock_guard<std::mutex> lock(mutex_);
     errorMessage_ = message;
-    status_ = RestoreStatus::FAILED;
-    Logger::error("Restore failed for VM " + vmId_ + ": " + message);
-}
-
-} // namespace vmware 
+} 

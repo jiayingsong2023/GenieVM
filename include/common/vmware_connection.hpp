@@ -10,8 +10,6 @@
 typedef void* VixHandle;
 #endif
 
-namespace vmware {
-
 class VMwareConnection {
 public:
     VMwareConnection(const std::string& host,
@@ -38,7 +36,7 @@ public:
 
     // Get CBT information for a VM
     bool getCBTInfo(const std::string& vmName,
-                    VixDiskLibBlockList& blockList);
+                    void* blockList); // Use void* if VixDiskLibBlockList is not available
 
     // Create a snapshot of a VM
     bool createSnapshot(const std::string& vmName,
@@ -49,12 +47,20 @@ public:
     bool removeSnapshot(const std::string& vmName,
                        const std::string& snapshotName);
 
+    // VDDK connection management
+    bool connectToDisk(const std::string& vmxPath);
+    void disconnectFromDisk();
+    VixDiskLibConnection getVixConnection() const { return vddkConnection_; }
+
 private:
     std::string host_;
     std::string username_;
     std::string password_;
     VixHandle hostHandle_;
     bool connected_;
+
+    // VDDK connection
+    VixDiskLibConnection vddkConnection_;
 
     // Helper methods
     bool initializeVDDK();

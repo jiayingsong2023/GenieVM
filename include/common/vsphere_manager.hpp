@@ -3,10 +3,19 @@
 #include <string>
 #include <memory>
 #include <vector>
-#include "common/vsphere_rest_client.hpp"
+#include <functional>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <queue>
+#include <future>
+#include <atomic>
+#include <chrono>
+#include <stdexcept>
+#include <filesystem>
+#include <nlohmann/json.hpp>
 #include "common/logger.hpp"
-
-namespace vmware {
+#include "common/vsphere_rest_client.hpp"
 
 class VSphereManager {
 public:
@@ -28,6 +37,4 @@ private:
     std::string password_;
     std::unique_ptr<VSphereRestClient> restClient_;
     bool connected_;
-};
-
-} // namespace vmware 
+}; 

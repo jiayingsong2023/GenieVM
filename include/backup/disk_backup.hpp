@@ -4,53 +4,43 @@
 #include <memory>
 #include <vector>
 #include <functional>
-#include "vixDiskLib.h"
-#include "common/logger.hpp"
-
-namespace vmware {
+#include "common/vmware_connection.hpp"
+#include <vixDiskLib.h>
 
 class DiskBackup {
 public:
-    DiskBackup(const std::string& sourcePath, const std::string& targetPath);
+    using ProgressCallback = std::function<void(double)>;
+
+    DiskBackup(std::shared_ptr<VMwareConnection> connection);
     ~DiskBackup();
 
-    // Initialize VDDK connection
     bool initialize();
-    
-    // Backup operations
-    bool backupFull();
-    bool backupIncremental();
-    
-    // Progress callback
-    using ProgressCallback = std::function<void(double)>;
-    void setProgressCallback(ProgressCallback callback) { progressCallback_ = callback; }
+    bool startBackup(const std::string& vmId, const std::string& backupPath);
+    bool stopBackup();
+    bool pauseBackup();
+    bool resumeBackup();
+    void setProgressCallback(ProgressCallback callback);
 
-    // Get disk information
-    bool getDiskInfo(VixDiskLibDiskInfo& diskInfo);
-
-private:
-    std::string sourcePath_;
-    std::string targetPath_;
-    VixDiskLibConnection connection_;
-    VixDiskLibHandle sourceDisk_;
-    VixDiskLibHandle targetDisk_;
-    ProgressCallback progressCallback_;
-
+    // Disk operations
     bool openDisks();
     void closeDisks();
+    bool backupFull();
+    bool backupIncremental();
+    bool restore();
+
+private:
+    static char progressFunc(void* data, int percent);
     bool copyBlocks(VixDiskLibBlockList* blockList);
-    void reportProgress(double progress);
-    static void VDDK_CALLBACK progressFunc(void* data, int percent);
 
-    // Helper methods
-    bool readDiskBlocks(uint64_t startSector,
-                       uint32_t numSectors,
-                       uint8_t* buffer);
-    bool writeBackupBlocks(uint64_t startSector,
-                          uint32_t numSectors,
-                          const uint8_t* buffer);
-    bool getChangedBlocks(VixDiskLibBlockList& blockList);
-    void logError(const std::string& operation);
-};
+    std::shared_ptr<VMwareConnection> connection_;
+    std::string vmId_;
+    std::string backupPath_;
+    std::string sourcePath_;
+    ProgressCallback progressCallback_;
+    bool isRunning_;
+    bool isPaused_;
 
-} // namespace vmware 
+    // VDDK handles
+    VixDiskLibHandle sourceDisk_;
+    VixDiskLibHandle backupDisk_;
+}; 

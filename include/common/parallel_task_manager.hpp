@@ -1,61 +1,53 @@
 #pragma once
 
 #include <string>
+#include <functional>
+#include <future>
+#include <queue>
 #include <vector>
 #include <mutex>
-#include <queue>
-#include <functional>
-#include <atomic>
-#include <future>
-#include <sys/types.h>
-#include <unistd.h>
-#include "common/logger.hpp"
-
-namespace vmware {
+#include <condition_variable>
+#include <thread>
 
 class ParallelTaskManager {
 public:
     using TaskCallback = std::function<void()>;
 
-    ParallelTaskManager(size_t maxConcurrentTasks = 4);
-    ~ParallelTaskManager();
-
-    // Add a task to the queue
-    std::future<void> addTask(const std::string& taskId, TaskCallback callback);
-
-    // Wait for all tasks to complete
-    void waitForAll();
-
-    // Get the number of active tasks
-    size_t getActiveTaskCount() const;
-
-    // Get the number of queued tasks
-    size_t getQueuedTaskCount() const;
-
-    // Stop all tasks
-    void stop();
-
-    // Process pending tasks - should be called periodically from main thread
-    void processTasks();
-
-private:
     struct Task {
         std::string id;
         TaskCallback callback;
         std::promise<void> promise;
-        pid_t processId;
+        int processId;
     };
 
+    explicit ParallelTaskManager(size_t maxThreads = 4);
+    ~ParallelTaskManager();
+
+    bool initialize();
+    void stop();
+    void addTask(Task task);
+    std::future<void> addTask(const std::string& taskId, TaskCallback callback);
+    size_t getQueueSize() const;
+    bool isRunning() const;
+    void waitForAll();
+    size_t getActiveTaskCount() const;
+    size_t getQueuedTaskCount() const;
+    void processTasks();
+
+private:
+    void workerLoop();
     void processTask(Task& task);
     bool shouldWorkerContinue() const;
     void cleanupCompletedTasks();
 
+    size_t maxThreads_;
+    bool isRunning_;
+    size_t activeTaskCount_;
+    std::mutex taskMutex_;
+    std::condition_variable taskCondition_;
     std::queue<Task> taskQueue_;
-    std::vector<Task> activeTasks_;
     std::mutex queueMutex_;
-    std::atomic<bool> running_;
-    std::atomic<size_t> activeTaskCount_;
-    size_t maxConcurrentTasks_;
-};
-
-} // namespace vmware 
+    std::condition_variable queueCondition_;
+    std::vector<Task> activeTasks_;
+    std::thread workerThread_;
+}; 
