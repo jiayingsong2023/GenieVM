@@ -13,16 +13,14 @@
 
 namespace vmware {
 
-BackupManager::BackupManager(const std::string& vcenterHost, 
-                           const std::string& username,
-                           const std::string& password)
-    : restClient_(std::make_unique<VSphereRestClient>(vcenterHost, username, password)) {
+BackupManager::BackupManager(std::unique_ptr<VSphereRestClient> restClient)
+    : restClient_(std::move(restClient)) {
 }
 
 BackupManager::~BackupManager() = default;
 
 bool BackupManager::startBackup(const std::string& vmId, const BackupConfig& config) {
-    std::lock_guard<std::mutex> lock(jobsMutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     
     // Check if backup is already running
     auto it = std::find_if(activeJobs_.begin(), activeJobs_.end(),
@@ -48,7 +46,7 @@ bool BackupManager::startBackup(const std::string& vmId, const BackupConfig& con
 }
 
 bool BackupManager::stopBackup(const std::string& vmId) {
-    std::lock_guard<std::mutex> lock(jobsMutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     
     auto it = std::find_if(activeJobs_.begin(), activeJobs_.end(),
                           [&vmId](const auto& job) { return job->getVMId() == vmId; });
@@ -69,7 +67,7 @@ bool BackupManager::stopBackup(const std::string& vmId) {
 }
 
 bool BackupManager::pauseBackup(const std::string& vmId) {
-    std::lock_guard<std::mutex> lock(jobsMutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     
     auto it = std::find_if(activeJobs_.begin(), activeJobs_.end(),
                           [&vmId](const auto& job) { return job->getVMId() == vmId; });
@@ -81,7 +79,7 @@ bool BackupManager::pauseBackup(const std::string& vmId) {
 }
 
 bool BackupManager::resumeBackup(const std::string& vmId) {
-    std::lock_guard<std::mutex> lock(jobsMutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     
     auto it = std::find_if(activeJobs_.begin(), activeJobs_.end(),
                           [&vmId](const auto& job) { return job->getVMId() == vmId; });
@@ -93,7 +91,7 @@ bool BackupManager::resumeBackup(const std::string& vmId) {
 }
 
 BackupStatus BackupManager::getBackupStatus(const std::string& vmId) const {
-    std::lock_guard<std::mutex> lock(jobsMutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     
     auto it = std::find_if(activeJobs_.begin(), activeJobs_.end(),
                           [&vmId](const auto& job) { return job->getVMId() == vmId; });
@@ -104,20 +102,20 @@ BackupStatus BackupManager::getBackupStatus(const std::string& vmId) const {
     return (*it)->getStatus();
 }
 
-std::vector<BackupJob> BackupManager::getActiveBackups() const {
-    std::lock_guard<std::mutex> lock(jobsMutex_);
-    std::vector<BackupJob> result;
+std::vector<BackupJob*> BackupManager::getActiveJobs() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<BackupJob*> result;
     result.reserve(activeJobs_.size());
     
     for (const auto& job : activeJobs_) {
-        result.push_back(*job);
+        result.push_back(job.get());
     }
     
     return result;
 }
 
 bool BackupManager::setBackupConfig(const std::string& vmId, const BackupConfig& config) {
-    std::lock_guard<std::mutex> lock(jobsMutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     
     auto it = std::find_if(activeJobs_.begin(), activeJobs_.end(),
                           [&vmId](const auto& job) { return job->getVMId() == vmId; });
@@ -129,7 +127,7 @@ bool BackupManager::setBackupConfig(const std::string& vmId, const BackupConfig&
 }
 
 BackupConfig BackupManager::getBackupConfig(const std::string& vmId) const {
-    std::lock_guard<std::mutex> lock(jobsMutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     
     auto it = std::find_if(activeJobs_.begin(), activeJobs_.end(),
                           [&vmId](const auto& job) { return job->getVMId() == vmId; });
@@ -141,33 +139,27 @@ BackupConfig BackupManager::getBackupConfig(const std::string& vmId) const {
 }
 
 bool BackupManager::prepareVMForBackup(const std::string& vmId) {
-    // Get VM info
+    // Get VM info to check if CBT is supported
     nlohmann::json vmInfo;
     if (!restClient_->getVMInfo(vmId, vmInfo)) {
-        LOG_ERROR("Failed to get VM info for {}", vmId);
+        Logger::error("Failed to get VM info for " + vmId);
         return false;
     }
 
-    // Enable CBT if supported
-    if (vmInfo["hardware"]["version"].get<std::string>() >= "vmx-13") {
-        if (!restClient_->setVMConfig(vmId, "ctkEnabled", true)) {
-            LOG_ERROR("Failed to enable CBT for {}", vmId);
-            return false;
-        }
+    // Prepare VM for backup using VSphereRestClient's built-in method
+    if (!restClient_->prepareVMForBackup(vmId, true)) {
+        Logger::error("Failed to prepare VM for backup: " + vmId);
+        return false;
     }
 
     return true;
 }
 
 bool BackupManager::cleanupVMAfterBackup(const std::string& vmId) {
-    // Disable CBT if it was enabled
-    nlohmann::json vmInfo;
-    if (restClient_->getVMInfo(vmId, vmInfo) && 
-        vmInfo["hardware"]["version"].get<std::string>() >= "vmx-13") {
-        if (!restClient_->setVMConfig(vmId, "ctkEnabled", false)) {
-            LOG_ERROR("Failed to disable CBT for {}", vmId);
-            return false;
-        }
+    // Cleanup VM after backup using VSphereRestClient's built-in method
+    if (!restClient_->cleanupVMAfterBackup(vmId)) {
+        Logger::error("Failed to cleanup VM after backup: " + vmId);
+        return false;
     }
     return true;
 }
@@ -177,7 +169,7 @@ std::string BackupManager::createBackupSnapshot(const std::string& vmId) {
     std::string description = "Backup snapshot created by GenieVM";
     
     if (!restClient_->createSnapshot(vmId, snapshotName, description)) {
-        LOG_ERROR("Failed to create snapshot for {}", vmId);
+        Logger::error("Failed to create snapshot for " + vmId);
         return "";
     }
     

@@ -24,14 +24,13 @@ public:
     
     // Status and monitoring
     BackupStatus getBackupStatus(const std::string& vmId) const;
-    std::vector<BackupJob> getActiveBackups() const;
+    std::vector<BackupJob*> getActiveJobs();
     
     // Configuration
     bool setBackupConfig(const std::string& vmId, const BackupConfig& config);
     BackupConfig getBackupConfig(const std::string& vmId) const;
 
     void cancelBackup(const std::string& vmId);
-    std::vector<BackupJob*> getActiveJobs();
 
 private:
     bool prepareVMForBackup(const std::string& vmId);
@@ -41,7 +40,7 @@ private:
 
     std::unique_ptr<VSphereRestClient> restClient_;
     std::vector<std::unique_ptr<BackupJob>> activeJobs_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
 };
 
 } // namespace vmware 
