@@ -36,7 +36,7 @@ VixError VixDiskLib_CloseWrapper(VixDiskLibHandle *diskHandle);
 
 VixError VixDiskLib_DisconnectWrapper(VixDiskLibConnection *connection);
 
-VixError VixDiskLib_ExitWrapper();
+void VixDiskLib_ExitWrapper();
 
 #ifdef __cplusplus
 }

@@ -195,13 +195,15 @@ target_link_libraries(vmware-restore-lib
 
 target_link_libraries(vmware-backup
     PRIVATE
-    vixDiskLib
-    ssl
-    crypto
-    pthread
-    dl
-    z
-    ${VDDK_STDCXX_LIBRARY}
+        vmware-backup-lib
+        vddk-wrapper
+        vixDiskLib
+        ssl
+        crypto
+        pthread
+        dl
+        z
+        ${VDDK_STDCXX_LIBRARY}
 )
 
 target_link_libraries(vmware-restore

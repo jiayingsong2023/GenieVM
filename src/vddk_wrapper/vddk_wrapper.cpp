@@ -11,7 +11,11 @@ VixError VixDiskLib_InitWrapper(uint32_t majorVersion,
                                VixDiskLibConnectParams *connectParams,
                                const char *libDir,
                                const char *configFile) {
-    return VixDiskLib_Init(majorVersion, minorVersion, connectParams, libDir, configFile);
+    return VixDiskLib_Init(majorVersion, minorVersion, 
+                          nullptr,  // log function
+                          nullptr,  // warn function
+                          nullptr,  // panic function
+                          libDir);
 }
 
 VixError VixDiskLib_ConnectWrapper(const VixDiskLibConnectParams *connectParams,
@@ -41,15 +45,23 @@ VixError VixDiskLib_WriteWrapper(VixDiskLibHandle diskHandle,
 }
 
 VixError VixDiskLib_CloseWrapper(VixDiskLibHandle *diskHandle) {
-    return VixDiskLib_Close(diskHandle);
+    VixError err = VixDiskLib_Close(*diskHandle);
+    if (err == VIX_OK) {
+        *diskHandle = nullptr;
+    }
+    return err;
 }
 
 VixError VixDiskLib_DisconnectWrapper(VixDiskLibConnection *connection) {
-    return VixDiskLib_Disconnect(connection);
+    VixError err = VixDiskLib_Disconnect(*connection);
+    if (err == VIX_OK) {
+        *connection = nullptr;
+    }
+    return err;
 }
 
-VixError VixDiskLib_ExitWrapper() {
-    return VixDiskLib_Exit();
+void VixDiskLib_ExitWrapper() {
+    VixDiskLib_Exit();
 }
 
 } // extern "C" 
