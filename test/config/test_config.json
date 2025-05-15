@@ -1,0 +1,31 @@
+{
+    "vsphere": {
+        "host": "vcenter.example.com",
+        "port": 443,
+        "username": "administrator@vsphere.local",
+        "password": "your_password",
+        "insecure": true
+    },
+    "backup": {
+        "storage_path": "../backups",
+        "max_parallel_jobs": 4,
+        "compression": true,
+        "verify_after_backup": true
+    },
+    "logging": {
+        "level": "debug",
+        "file": "../logs/vmware-backup.log",
+        "max_size_mb": 100,
+        "max_files": 5
+    },
+    "test_vms": [
+        {
+            "name": "test-vm-1",
+            "description": "Test VM for backup verification"
+        },
+        {
+            "name": "test-vm-2",
+            "description": "Test VM for restore verification"
+        }
+    ]
+} 
