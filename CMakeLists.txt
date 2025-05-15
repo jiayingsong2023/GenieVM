@@ -10,6 +10,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Ensure ABI compatibility
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_GLIBCXX_USE_CXX11_ABI=0")
+
 # Find required packages
 find_package(CURL REQUIRED)
 if(NOT CURL_FOUND)
@@ -117,34 +120,69 @@ target_include_directories(vmware-restore
         ${CURL_INCLUDE_DIRS}
 )
 
-# Set RPATH settings
-set(CMAKE_SKIP_BUILD_RPATH FALSE)
+# Set VDDK library path
+set(VDDK_LIB_DIR "/usr/local/vddk/lib64")
+
+# Add VDDK library path to rpath
+set(CMAKE_INSTALL_RPATH "${VDDK_LIB_DIR}")
 set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
-set(CMAKE_INSTALL_RPATH "${VDDK_ROOT}/lib64")
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
-# Find libstdc++
-find_library(STDCXX_LIBRARY NAMES stdc++ libstdc++ libstdc++.so.6)
-if(NOT STDCXX_LIBRARY)
-    message(FATAL_ERROR "libstdc++ not found")
-endif()
-message(STATUS "Found libstdc++: ${STDCXX_LIBRARY}")
+# Add VDDK library path to link directories
+link_directories(${VDDK_LIB_DIR})
 
-# Link libraries
+# Find VDDK's libstdc++
+find_library(VDDK_STDCXX_LIBRARY NAMES stdc++ libstdc++ libstdc++.so.6 PATHS ${VDDK_LIB_DIR} NO_DEFAULT_PATH)
+if(NOT VDDK_STDCXX_LIBRARY)
+    message(FATAL_ERROR "VDDK's libstdc++ not found in ${VDDK_LIB_DIR}")
+endif()
+message(STATUS "Found VDDK's libstdc++: ${VDDK_STDCXX_LIBRARY}")
+
+# Create a wrapper library for VDDK with C++11
+add_library(vddk-wrapper SHARED
+    src/vddk_wrapper/vddk_wrapper.cpp
+)
+
+# Set C++11 for the VDDK wrapper only
+set_target_properties(vddk-wrapper PROPERTIES
+    CXX_STANDARD 11
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+    INSTALL_RPATH "${VDDK_LIB_DIR}"
+    BUILD_WITH_INSTALL_RPATH TRUE
+    SKIP_BUILD_RPATH FALSE
+)
+
+# Set include directories for the wrapper
+target_include_directories(vddk-wrapper
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${VDDK_ROOT}/include
+)
+
+# Link VDDK libraries to the wrapper
+target_link_libraries(vddk-wrapper
+    PRIVATE
+        vixDiskLib
+        ${VDDK_STDCXX_LIBRARY}
+)
+
+# Link libraries for main application
 target_link_libraries(vmware-backup-lib
-    vixDiskLib
-    pthread
-    dl
-    ssl
-    crypto
-    z
-    ${CURL_LIBRARIES}
-    nlohmann_json::nlohmann_json
-    ${STDCXX_LIBRARY}
+    PRIVATE
+        vddk-wrapper
+        pthread
+        dl
+        ssl
+        crypto
+        z
+        ${CURL_LIBRARIES}
+        nlohmann_json::nlohmann_json
 )
 
 target_link_libraries(vmware-restore-lib
     vixDiskLib
+    vddk-wrapper
     pthread
     dl
     ssl
@@ -152,15 +190,34 @@ target_link_libraries(vmware-restore-lib
     z
     ${CURL_LIBRARIES}
     nlohmann_json::nlohmann_json
-    ${STDCXX_LIBRARY}
+    ${VDDK_STDCXX_LIBRARY}
 )
 
 target_link_libraries(vmware-backup
-    vmware-backup-lib
-    ${STDCXX_LIBRARY}
+    PRIVATE
+    vixDiskLib
+    ssl
+    crypto
+    pthread
+    dl
+    z
+    ${VDDK_STDCXX_LIBRARY}
 )
 
 target_link_libraries(vmware-restore
     vmware-restore-lib
-    ${STDCXX_LIBRARY}
+    ${VDDK_STDCXX_LIBRARY}
+)
+
+# Set RPATH for the executables
+set_target_properties(vmware-backup PROPERTIES
+    INSTALL_RPATH "${VDDK_LIB_DIR}"
+    BUILD_WITH_INSTALL_RPATH TRUE
+    SKIP_BUILD_RPATH FALSE
+)
+
+set_target_properties(vmware-restore PROPERTIES
+    INSTALL_RPATH "${VDDK_LIB_DIR}"
+    BUILD_WITH_INSTALL_RPATH TRUE
+    SKIP_BUILD_RPATH FALSE
 ) 
