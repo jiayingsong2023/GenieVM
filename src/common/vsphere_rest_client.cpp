@@ -310,6 +310,424 @@ bool VSphereRestClient::cleanupVMAfterBackup(const std::string& vmId) {
     return false;
 }
 
+bool VSphereRestClient::createVM(const nlohmann::json& vmConfig, nlohmann::json& response) {
+    // Validate required fields
+    if (!vmConfig.contains("name") || !vmConfig.contains("datastore_id") || 
+        !vmConfig.contains("resource_pool_id")) {
+        Logger::error("Missing required fields in VM configuration");
+        return false;
+    }
+
+    // Validate field types
+    if (!vmConfig["name"].is_string() || !vmConfig["datastore_id"].is_string() || 
+        !vmConfig["resource_pool_id"].is_string()) {
+        Logger::error("Invalid field types in VM configuration");
+        return false;
+    }
+
+    // Validate optional fields if present
+    if (vmConfig.contains("num_cpus") && !vmConfig["num_cpus"].is_number()) {
+        Logger::error("Invalid num_cpus field type");
+        return false;
+    }
+    if (vmConfig.contains("memory_mb") && !vmConfig["memory_mb"].is_number()) {
+        Logger::error("Invalid memory_mb field type");
+        return false;
+    }
+
+    bool success = makeRequest("POST", "/rest/vcenter/vm", vmConfig, response);
+    if (success) {
+        Logger::info("Successfully created VM: " + vmConfig["name"].get<std::string>());
+    }
+    return success;
+}
+
+bool VSphereRestClient::attachDisk(const std::string& vmId, const nlohmann::json& diskConfig, nlohmann::json& response) {
+    // Validate VM ID
+    if (vmId.empty()) {
+        Logger::error("Invalid VM ID");
+        return false;
+    }
+
+    // Validate required fields
+    if (!diskConfig.contains("path")) {
+        Logger::error("Missing required disk path in configuration");
+        return false;
+    }
+
+    // Validate field types
+    if (!diskConfig["path"].is_string()) {
+        Logger::error("Invalid disk path field type");
+        return false;
+    }
+
+    // Validate optional fields if present
+    if (diskConfig.contains("controller_type") && !diskConfig["controller_type"].is_string()) {
+        Logger::error("Invalid controller_type field type");
+        return false;
+    }
+    if (diskConfig.contains("unit_number") && !diskConfig["unit_number"].is_number()) {
+        Logger::error("Invalid unit_number field type");
+        return false;
+    }
+    if (diskConfig.contains("thin_provisioned") && !diskConfig["thin_provisioned"].is_boolean()) {
+        Logger::error("Invalid thin_provisioned field type");
+        return false;
+    }
+
+    bool success = makeRequest("POST", "/rest/vcenter/vm/" + vmId + "/hardware/disk", diskConfig, response);
+    if (success) {
+        Logger::info("Successfully attached disk to VM: " + vmId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::listVMs(nlohmann::json& response) {
+    // Add query parameters for filtering and pagination
+    nlohmann::json queryParams = {
+        {"filter.names", nlohmann::json::array()},  // Empty array means no name filtering
+        {"filter.power_states", nlohmann::json::array()},  // Empty array means all power states
+        {"page_size", 100},  // Maximum number of VMs to return
+        {"page", 1}  // Start with first page
+    };
+
+    bool success = makeRequest("GET", "/rest/vcenter/vm", queryParams, response);
+    if (success) {
+        Logger::info("Successfully retrieved VM list");
+    }
+    return success;
+}
+
+// Add new method for VM cloning
+bool VSphereRestClient::cloneVM(const std::string& sourceVmId, const nlohmann::json& cloneConfig, nlohmann::json& response) {
+    // Validate source VM ID
+    if (sourceVmId.empty()) {
+        Logger::error("Invalid source VM ID");
+        return false;
+    }
+
+    // Validate required fields
+    if (!cloneConfig.contains("name") || !cloneConfig.contains("datastore_id") || 
+        !cloneConfig.contains("resource_pool_id")) {
+        Logger::error("Missing required fields in clone configuration");
+        return false;
+    }
+
+    // Validate field types
+    if (!cloneConfig["name"].is_string() || !cloneConfig["datastore_id"].is_string() || 
+        !cloneConfig["resource_pool_id"].is_string()) {
+        Logger::error("Invalid field types in clone configuration");
+        return false;
+    }
+
+    bool success = makeRequest("POST", "/rest/vcenter/vm/" + sourceVmId + "/clone", cloneConfig, response);
+    if (success) {
+        Logger::info("Successfully cloned VM: " + sourceVmId + " to: " + cloneConfig["name"].get<std::string>());
+    }
+    return success;
+}
+
+// Add new method for VM migration
+bool VSphereRestClient::migrateVM(const std::string& vmId, const nlohmann::json& migrateConfig, nlohmann::json& response) {
+    // Validate VM ID
+    if (vmId.empty()) {
+        Logger::error("Invalid VM ID");
+        return false;
+    }
+
+    // Validate required fields
+    if (!migrateConfig.contains("target_host") || !migrateConfig.contains("target_datastore")) {
+        Logger::error("Missing required fields in migration configuration");
+        return false;
+    }
+
+    // Validate field types
+    if (!migrateConfig["target_host"].is_string() || !migrateConfig["target_datastore"].is_string()) {
+        Logger::error("Invalid field types in migration configuration");
+        return false;
+    }
+
+    bool success = makeRequest("POST", "/rest/vcenter/vm/" + vmId + "/migrate", migrateConfig, response);
+    if (success) {
+        Logger::info("Successfully initiated VM migration: " + vmId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::getChangedDiskAreas(const std::string& vmId, const std::string& diskId,
+                                          int64_t startOffset, int64_t length, nlohmann::json& response) {
+    // Validate inputs
+    if (vmId.empty() || diskId.empty() || startOffset < 0 || length <= 0) {
+        Logger::error("Invalid input parameters for getting changed disk areas");
+        return false;
+    }
+
+    nlohmann::json params = {
+        {"start_offset", startOffset},
+        {"length", length}
+    };
+
+    bool success = makeRequest("GET", "/rest/vcenter/vm/" + vmId + "/hardware/disk/" + diskId + "/changed-areas",
+                             params, response);
+    if (success) {
+        Logger::info("Successfully retrieved changed areas for disk " + diskId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::getDiskLayout(const std::string& vmId, const std::string& diskId, nlohmann::json& response) {
+    // Validate inputs
+    if (vmId.empty() || diskId.empty()) {
+        Logger::error("Invalid input parameters for getting disk layout");
+        return false;
+    }
+
+    bool success = makeRequest("GET", "/rest/vcenter/vm/" + vmId + "/hardware/disk/" + diskId + "/layout",
+                             nlohmann::json(), response);
+    if (success) {
+        Logger::info("Successfully retrieved layout for disk " + diskId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::getDiskChainInfo(const std::string& vmId, const std::string& diskId, nlohmann::json& response) {
+    // Validate inputs
+    if (vmId.empty() || diskId.empty()) {
+        Logger::error("Invalid input parameters for getting disk chain info");
+        return false;
+    }
+
+    bool success = makeRequest("GET", "/rest/vcenter/vm/" + vmId + "/hardware/disk/" + diskId + "/chain",
+                             nlohmann::json(), response);
+    if (success) {
+        Logger::info("Successfully retrieved chain info for disk " + diskId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::consolidateDisks(const std::string& vmId, const std::string& diskId, nlohmann::json& response) {
+    // Validate inputs
+    if (vmId.empty() || diskId.empty()) {
+        Logger::error("Invalid input parameters for disk consolidation");
+        return false;
+    }
+
+    bool success = makeRequest("POST", "/rest/vcenter/vm/" + vmId + "/hardware/disk/" + diskId + "/consolidate",
+                             nlohmann::json(), response);
+    if (success) {
+        Logger::info("Successfully initiated consolidation for disk " + diskId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::defragmentDisk(const std::string& vmId, const std::string& diskId, nlohmann::json& response) {
+    // Validate inputs
+    if (vmId.empty() || diskId.empty()) {
+        Logger::error("Invalid input parameters for disk defragmentation");
+        return false;
+    }
+
+    bool success = makeRequest("POST", "/rest/vcenter/vm/" + vmId + "/hardware/disk/" + diskId + "/defragment",
+                             nlohmann::json(), response);
+    if (success) {
+        Logger::info("Successfully initiated defragmentation for disk " + diskId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::shrinkDisk(const std::string& vmId, const std::string& diskId, nlohmann::json& response) {
+    // Validate inputs
+    if (vmId.empty() || diskId.empty()) {
+        Logger::error("Invalid input parameters for disk shrinking");
+        return false;
+    }
+
+    bool success = makeRequest("POST", "/rest/vcenter/vm/" + vmId + "/hardware/disk/" + diskId + "/shrink",
+                             nlohmann::json(), response);
+    if (success) {
+        Logger::info("Successfully initiated shrinking for disk " + diskId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::getBackupProgress(const std::string& taskId, nlohmann::json& response) {
+    // Validate inputs
+    if (taskId.empty()) {
+        Logger::error("Invalid task ID for getting backup progress");
+        return false;
+    }
+
+    bool success = makeRequest("GET", "/rest/vcenter/backup/task/" + taskId + "/progress",
+                             nlohmann::json(), response);
+    if (success) {
+        Logger::info("Successfully retrieved progress for backup task " + taskId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::cancelBackup(const std::string& taskId, nlohmann::json& response) {
+    // Validate inputs
+    if (taskId.empty()) {
+        Logger::error("Invalid task ID for canceling backup");
+        return false;
+    }
+
+    bool success = makeRequest("POST", "/rest/vcenter/backup/task/" + taskId + "/cancel",
+                             nlohmann::json(), response);
+    if (success) {
+        Logger::info("Successfully canceled backup task " + taskId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::verifyBackup(const std::string& backupId, nlohmann::json& response) {
+    // Validate inputs
+    if (backupId.empty()) {
+        Logger::error("Invalid backup ID for verification");
+        return false;
+    }
+
+    bool success = makeRequest("POST", "/rest/vcenter/backup/" + backupId + "/verify",
+                             nlohmann::json(), response);
+    if (success) {
+        Logger::info("Successfully initiated verification for backup " + backupId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::getBackupHistory(const std::string& vmId, nlohmann::json& response) {
+    // Validate inputs
+    if (vmId.empty()) {
+        Logger::error("Invalid VM ID for getting backup history");
+        return false;
+    }
+
+    bool success = makeRequest("GET", "/rest/vcenter/vm/" + vmId + "/backup/history",
+                             nlohmann::json(), response);
+    if (success) {
+        Logger::info("Successfully retrieved backup history for VM " + vmId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::getBackupSchedule(const std::string& vmId, nlohmann::json& response) {
+    // Validate inputs
+    if (vmId.empty()) {
+        Logger::error("Invalid VM ID for getting backup schedule");
+        return false;
+    }
+
+    bool success = makeRequest("GET", "/rest/vcenter/vm/" + vmId + "/backup/schedule",
+                             nlohmann::json(), response);
+    if (success) {
+        Logger::info("Successfully retrieved backup schedule for VM " + vmId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::setBackupSchedule(const std::string& vmId, const nlohmann::json& schedule, nlohmann::json& response) {
+    // Validate inputs
+    if (vmId.empty()) {
+        Logger::error("Invalid VM ID for setting backup schedule");
+        return false;
+    }
+
+    // Validate schedule configuration
+    if (!schedule.contains("frequency") || !schedule.contains("time")) {
+        Logger::error("Missing required fields in schedule configuration");
+        return false;
+    }
+
+    bool success = makeRequest("PUT", "/rest/vcenter/vm/" + vmId + "/backup/schedule",
+                             schedule, response);
+    if (success) {
+        Logger::info("Successfully set backup schedule for VM " + vmId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::getBackupRetention(const std::string& vmId, nlohmann::json& response) {
+    // Validate inputs
+    if (vmId.empty()) {
+        Logger::error("Invalid VM ID for getting backup retention");
+        return false;
+    }
+
+    bool success = makeRequest("GET", "/rest/vcenter/vm/" + vmId + "/backup/retention",
+                             nlohmann::json(), response);
+    if (success) {
+        Logger::info("Successfully retrieved backup retention for VM " + vmId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::setBackupRetention(const std::string& vmId, const nlohmann::json& retention, nlohmann::json& response) {
+    // Validate inputs
+    if (vmId.empty()) {
+        Logger::error("Invalid VM ID for setting backup retention");
+        return false;
+    }
+
+    // Validate retention configuration
+    if (!retention.contains("days") || !retention.contains("copies")) {
+        Logger::error("Missing required fields in retention configuration");
+        return false;
+    }
+
+    bool success = makeRequest("PUT", "/rest/vcenter/vm/" + vmId + "/backup/retention",
+                             retention, response);
+    if (success) {
+        Logger::info("Successfully set backup retention for VM " + vmId);
+    }
+    return success;
+}
+
+bool VSphereRestClient::createDisk(const std::string& vmId, const nlohmann::json& diskConfig, nlohmann::json& response) {
+    std::string endpoint = "/vcenter/vm/" + vmId + "/disk";
+    return makeRequest("POST", endpoint, diskConfig, response);
+}
+
+bool VSphereRestClient::resizeDisk(const std::string& vmId, const std::string& diskId, int64_t newSizeKB, nlohmann::json& response) {
+    std::string endpoint = "/vcenter/vm/" + vmId + "/disk/" + diskId;
+    nlohmann::json data = {
+        {"size_kb", newSizeKB}
+    };
+    return makeRequest("PATCH", endpoint, data, response);
+}
+
+bool VSphereRestClient::deleteDisk(const std::string& vmId, const std::string& diskId, nlohmann::json& response) {
+    std::string endpoint = "/vcenter/vm/" + vmId + "/disk/" + diskId;
+    return makeRequest("DELETE", endpoint, nlohmann::json(), response);
+}
+
+bool VSphereRestClient::detachDisk(const std::string& vmId, const std::string& diskId, nlohmann::json& response) {
+    std::string endpoint = "/vcenter/vm/" + vmId + "/disk/" + diskId + "/detach";
+    return makeRequest("POST", endpoint, nlohmann::json(), response);
+}
+
+bool VSphereRestClient::updateDiskBacking(const std::string& vmId, const std::string& diskId, 
+                                        const nlohmann::json& backingConfig, nlohmann::json& response) {
+    std::string endpoint = "/vcenter/vm/" + vmId + "/disk/" + diskId + "/backing";
+    return makeRequest("PATCH", endpoint, backingConfig, response);
+}
+
+bool VSphereRestClient::getDiskControllers(const std::string& vmId, nlohmann::json& response) {
+    std::string endpoint = "/vcenter/vm/" + vmId + "/disk/controllers";
+    return makeRequest("GET", endpoint, nlohmann::json(), response);
+}
+
+bool VSphereRestClient::createDiskController(const std::string& vmId, const nlohmann::json& controllerConfig, 
+                                           nlohmann::json& response) {
+    std::string endpoint = "/vcenter/vm/" + vmId + "/disk/controllers";
+    return makeRequest("POST", endpoint, controllerConfig, response);
+}
+
+bool VSphereRestClient::deleteDiskController(const std::string& vmId, const std::string& controllerId, 
+                                           nlohmann::json& response) {
+    std::string endpoint = "/vcenter/vm/" + vmId + "/disk/controllers/" + controllerId;
+    return makeRequest("DELETE", endpoint, nlohmann::json(), response);
+}
+
 size_t VSphereRestClient::writeCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
     size_t realsize = size * nmemb;
     userp->append((char*)contents, realsize);

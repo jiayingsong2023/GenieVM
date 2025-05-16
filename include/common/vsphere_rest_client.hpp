@@ -29,6 +29,21 @@ public:
     bool resetVM(const std::string& vmId);
     bool shutdownVM(const std::string& vmId);
     bool rebootVM(const std::string& vmId);
+    bool createVM(const nlohmann::json& vmConfig, nlohmann::json& response);
+    bool attachDisk(const std::string& vmId, const nlohmann::json& diskConfig, nlohmann::json& response);
+    bool listVMs(nlohmann::json& response);
+    bool cloneVM(const std::string& sourceVmId, const nlohmann::json& cloneConfig, nlohmann::json& response);
+    bool migrateVM(const std::string& vmId, const nlohmann::json& migrateConfig, nlohmann::json& response);
+
+    // Disk Operations
+    bool createDisk(const std::string& vmId, const nlohmann::json& diskConfig, nlohmann::json& response);
+    bool resizeDisk(const std::string& vmId, const std::string& diskId, int64_t newSizeKB, nlohmann::json& response);
+    bool deleteDisk(const std::string& vmId, const std::string& diskId, nlohmann::json& response);
+    bool detachDisk(const std::string& vmId, const std::string& diskId, nlohmann::json& response);
+    bool updateDiskBacking(const std::string& vmId, const std::string& diskId, const nlohmann::json& backingConfig, nlohmann::json& response);
+    bool getDiskControllers(const std::string& vmId, nlohmann::json& response);
+    bool createDiskController(const std::string& vmId, const nlohmann::json& controllerConfig, nlohmann::json& response);
+    bool deleteDiskController(const std::string& vmId, const std::string& controllerId, nlohmann::json& response);
 
     // Snapshot Operations
     bool createSnapshot(const std::string& vmId, const std::string& name, const std::string& description);
@@ -46,6 +61,21 @@ public:
     // Backup Operations
     bool prepareVMForBackup(const std::string& vmId, bool quiesce);
     bool cleanupVMAfterBackup(const std::string& vmId);
+    bool getChangedDiskAreas(const std::string& vmId, const std::string& diskId, 
+                            int64_t startOffset, int64_t length, nlohmann::json& response);
+    bool getDiskLayout(const std::string& vmId, const std::string& diskId, nlohmann::json& response);
+    bool getDiskChainInfo(const std::string& vmId, const std::string& diskId, nlohmann::json& response);
+    bool consolidateDisks(const std::string& vmId, const std::string& diskId, nlohmann::json& response);
+    bool defragmentDisk(const std::string& vmId, const std::string& diskId, nlohmann::json& response);
+    bool shrinkDisk(const std::string& vmId, const std::string& diskId, nlohmann::json& response);
+    bool getBackupProgress(const std::string& taskId, nlohmann::json& response);
+    bool cancelBackup(const std::string& taskId, nlohmann::json& response);
+    bool verifyBackup(const std::string& backupId, nlohmann::json& response);
+    bool getBackupHistory(const std::string& vmId, nlohmann::json& response);
+    bool getBackupSchedule(const std::string& vmId, nlohmann::json& response);
+    bool setBackupSchedule(const std::string& vmId, const nlohmann::json& schedule, nlohmann::json& response);
+    bool getBackupRetention(const std::string& vmId, nlohmann::json& response);
+    bool setBackupRetention(const std::string& vmId, const nlohmann::json& retention, nlohmann::json& response);
 
 private:
     // Helper methods
