@@ -1,18 +1,27 @@
 #pragma once
 
-#include <string>
-#include <memory>
-#include <vector>
-#include <map>
-#include <chrono>
-#include <mutex>
-#include <thread>
 #include "backup/backup_config.hpp"
-#include "common/vmware_connection.hpp"
+#include "common/scheduler.hpp"
+#include "common/logger.hpp"
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <mutex>
+#include <chrono>
+
+class BackupManager;
 
 class BackupScheduler {
 public:
-    BackupScheduler(std::shared_ptr<VMwareConnection> connection);
+    struct Schedule {
+        BackupConfig config;
+        std::chrono::system_clock::time_point nextRun;
+        std::chrono::system_clock::time_point lastRun;
+        std::string lastBackupPath;
+    };
+
+    explicit BackupScheduler(std::shared_ptr<BackupManager> manager);
     ~BackupScheduler();
 
     bool initialize();
@@ -23,7 +32,6 @@ public:
     std::vector<BackupConfig> getScheduledBackups() const;
     BackupConfig getBackupConfig(const std::string& backupId) const;
 
-    // Schedule management
     void addSchedule(const std::string& vmId, const BackupConfig& config);
     void removeSchedule(const std::string& vmId);
     void updateSchedule(const std::string& vmId, const BackupConfig& config);
@@ -31,33 +39,26 @@ public:
     void getAllSchedules(std::vector<std::pair<std::string, BackupConfig>>& schedules) const;
     std::chrono::system_clock::time_point getNextRunTime(const std::string& vmId) const;
 
-    // Retention policy
     void applyRetentionPolicy(const std::string& vmId);
     void cleanupOldBackups(const std::string& vmId);
 
-    // Scheduler control
     void start();
     void stop();
 
 private:
-    struct Schedule {
-        BackupConfig config;
-        std::chrono::system_clock::time_point nextRun;
-        std::chrono::system_clock::time_point lastRun;
-    };
+    std::shared_ptr<BackupManager> manager_;
+    std::unique_ptr<Scheduler> scheduler_;
+    std::unordered_map<std::string, Schedule> schedules_;
+    std::unordered_map<std::string, BackupConfig> scheduledBackups_;
+    std::mutex mutex_;
+    bool running_ = false;
 
-    void schedulerLoop();
     void checkSchedules();
     bool shouldRunBackup(const Schedule& schedule) const;
     void updateNextRun(Schedule& schedule);
     std::chrono::system_clock::time_point calculateNextRun(const BackupConfig& config) const;
-    bool isBackupExpired(const std::string& backupPath, int retentionDays) const;
     std::vector<std::string> getBackupPaths(const std::string& vmId) const;
-
-    std::shared_ptr<VMwareConnection> connection_;
-    std::map<std::string, BackupConfig> scheduledBackups_;
-    std::map<std::string, Schedule> schedules_;
-    std::mutex mutex_;
-    std::thread schedulerThread_;
-    bool isRunning_;
+    bool isBackupExpired(const std::string& vmId, int retentionDays) const;
+    bool isBackupNeeded(const std::string& vmId, const BackupConfig& config) const;
+    std::string getBackupPath(const std::string& vmId, const BackupConfig& config) const;
 }; 

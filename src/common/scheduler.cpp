@@ -2,26 +2,25 @@
 #include "common/logger.hpp"
 #include <chrono>
 #include <thread>
+#include <algorithm>
+#include <sstream>
 
-Scheduler::Scheduler() : running_(false) {
+Scheduler::Scheduler()
+    : running_(false) {
 }
 
 Scheduler::~Scheduler() {
     stop();
+    if (schedulerThread_.joinable()) {
+        schedulerThread_.join();
+    }
 }
 
-bool Scheduler::scheduleTask(const std::string& taskId,
+bool Scheduler::scheduleTask(const std::string& taskId, 
                            TimePoint scheduledTime,
                            TaskCallback callback) {
-    std::lock_guard<std::mutex> lock(tasksMutex_);
-    
-    Task task;
-    task.scheduledTime = scheduledTime;
-    task.interval = 0;
-    task.callback = callback;
-    task.isPeriodic = false;
-    
-    tasks_[taskId] = task;
+    std::unique_lock<std::mutex> lock(tasksMutex_);
+    tasks_[taskId] = {scheduledTime, 0, callback, false};
     condition_.notify_one();
     return true;
 }
@@ -29,69 +28,52 @@ bool Scheduler::scheduleTask(const std::string& taskId,
 bool Scheduler::schedulePeriodicTask(const std::string& taskId,
                                    Duration interval,
                                    TaskCallback callback) {
-    if (interval <= 0) {
-        return false;
-    }
-
-    std::lock_guard<std::mutex> lock(tasksMutex_);
-    
-    Task task;
-    task.scheduledTime = std::time(nullptr) + interval;
-    task.interval = interval;
-    task.callback = callback;
-    task.isPeriodic = true;
-    
-    tasks_[taskId] = task;
+    std::unique_lock<std::mutex> lock(tasksMutex_);
+    auto now = std::time(nullptr);
+    tasks_[taskId] = {now + interval, interval, callback, true};
     condition_.notify_one();
     return true;
 }
 
 bool Scheduler::cancelTask(const std::string& taskId) {
-    std::lock_guard<std::mutex> lock(tasksMutex_);
+    std::unique_lock<std::mutex> lock(tasksMutex_);
     return tasks_.erase(taskId) > 0;
 }
 
 void Scheduler::start() {
-    if (running_) {
-        return;
+    if (!running_) {
+        running_ = true;
+        schedulerThread_ = std::thread(&Scheduler::schedulerLoop, this);
     }
-
-    running_ = true;
-    schedulerThread_ = std::thread(&Scheduler::schedulerLoop, this);
 }
 
 void Scheduler::stop() {
-    if (!running_) {
-        return;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(tasksMutex_);
+    if (running_) {
         running_ = false;
-    }
-    condition_.notify_one();
-    
-    if (schedulerThread_.joinable()) {
-        schedulerThread_.join();
+        condition_.notify_one();
     }
 }
 
 void Scheduler::processTasks() {
-    std::lock_guard<std::mutex> lock(tasksMutex_);
-    
+    std::unique_lock<std::mutex> lock(tasksMutex_);
     auto now = std::time(nullptr);
-    auto it = tasks_.begin();
     
-    while (it != tasks_.end()) {
+    for (auto it = tasks_.begin(); it != tasks_.end();) {
         if (it->second.scheduledTime <= now) {
-            executeTask(it->first, it->second);
+            auto taskId = it->first;
+            auto task = it->second;
             
-            if (it->second.isPeriodic) {
-                it->second.scheduledTime = getNextExecutionTime(it->second);
+            if (task.isPeriodic) {
+                task.scheduledTime = now + task.interval;
+                it->second = task;
                 ++it;
             } else {
                 it = tasks_.erase(it);
             }
+            
+            lock.unlock();
+            executeTask(taskId, task);
+            lock.lock();
         } else {
             ++it;
         }
@@ -102,12 +84,14 @@ void Scheduler::executeTask(const std::string& taskId, const Task& task) {
     try {
         task.callback();
     } catch (const std::exception& e) {
-        Logger::error("Task " + taskId + " failed: " + e.what());
+        std::stringstream ss;
+        ss << "Task " << taskId << " failed: " << e.what();
+        Logger::error(ss.str());
     }
 }
 
 Scheduler::TimePoint Scheduler::getNextExecutionTime(const Task& task) {
-    return std::time(nullptr) + task.interval;
+    return task.scheduledTime;
 }
 
 void Scheduler::schedulerLoop() {
@@ -115,20 +99,36 @@ void Scheduler::schedulerLoop() {
         std::unique_lock<std::mutex> lock(tasksMutex_);
         
         if (tasks_.empty()) {
-            condition_.wait(lock, [this] { return !running_ || !tasks_.empty(); });
+            condition_.wait(lock, [this] {
+                return !running_ || !tasks_.empty();
+            });
             continue;
         }
         
         auto now = std::time(nullptr);
-        auto nextTask = tasks_.begin();
-        auto waitTime = nextTask->second.scheduledTime - now;
+        auto nextTask = std::min_element(tasks_.begin(), tasks_.end(),
+            [](const auto& a, const auto& b) {
+                return a.second.scheduledTime < b.second.scheduledTime;
+            });
         
-        if (waitTime > 0) {
-            condition_.wait_for(lock, std::chrono::seconds(waitTime),
-                              [this] { return !running_; });
-            continue;
+        if (nextTask->second.scheduledTime <= now) {
+            auto taskId = nextTask->first;
+            auto task = nextTask->second;
+            
+            if (task.isPeriodic) {
+                task.scheduledTime = now + task.interval;
+                nextTask->second = task;
+            } else {
+                tasks_.erase(nextTask);
+            }
+            
+            lock.unlock();
+            executeTask(taskId, task);
+            lock.lock();
+        } else {
+            condition_.wait_for(lock, 
+                std::chrono::seconds(nextTask->second.scheduledTime - now),
+                [this] { return !running_; });
         }
-        
-        processTasks();
     }
 } 

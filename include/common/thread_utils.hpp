@@ -1,23 +1,26 @@
 #pragma once
 
-#include <ctime>
-#include <unistd.h>  // for sleep()
+#include <thread>
+#include <chrono>
+#include <functional>
+#include <future>
 
-namespace thread_utils {
+// Thread utilities for managing thread pools and async operations
+class ThreadUtils {
+public:
+    static void sleepFor(std::chrono::milliseconds duration) {
+        std::this_thread::sleep_for(duration);
+    }
 
-// Sleep for specified number of seconds
-inline void sleep_for_seconds(int seconds) {
-    sleep(seconds);  // Using POSIX sleep() instead of chrono
-}
+    template<typename Func, typename... Args>
+    static std::future<typename std::result_of<Func(Args...)>::type>
+    async(Func&& func, Args&&... args) {
+        return std::async(std::launch::async, 
+                         std::forward<Func>(func), 
+                         std::forward<Args>(args)...);
+    }
 
-// Get current time in seconds since epoch
-inline time_t get_current_time() {
-    return std::time(nullptr);
-}
-
-// Check if current time has passed the target time
-inline bool has_time_passed(time_t target_time) {
-    return std::time(nullptr) >= target_time;
-}
-
-} // namespace thread_utils
+    static unsigned int getThreadCount() {
+        return std::thread::hardware_concurrency();
+    }
+};

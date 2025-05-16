@@ -1,9 +1,10 @@
 #pragma once
 
+#include "backup/vmware/vmware_connection.hpp"
 #include <string>
+#include <vector>
 #include <memory>
 #include <functional>
-#include "common/vmware_connection.hpp"
 #include <vixDiskLib.h>
 
 class DiskRestore {

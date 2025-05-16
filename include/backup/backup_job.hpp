@@ -1,54 +1,68 @@
 #pragma once
 
-#include <string>
 #include <memory>
-#include <vector>
-#include <atomic>
-#include "common/vmware_connection.hpp"
+#include <string>
+#include <functional>
+#include "backup/backup_provider.hpp"
 #include "backup/backup_config.hpp"
+#include <vector>
+#include <thread>
+#include <mutex>
+#include <atomic>
+
+// Forward declarations
+class BackupProvider;
+
+// Callback type definitions
+using ProgressCallback = std::function<void(int progress)>;
+using StatusCallback = std::function<void(const std::string& status)>;
 
 class BackupJob {
 public:
     enum class Status {
         PENDING,
         RUNNING,
-        PAUSED,
         COMPLETED,
         FAILED,
         CANCELLED
     };
 
-    BackupJob(std::shared_ptr<VMwareConnection> connection, const BackupConfig& config);
+    BackupJob(std::shared_ptr<BackupProvider> provider, const BackupConfig& config);
     ~BackupJob();
 
     // Job control
-    bool start();
-    bool stop();
-    bool pause();
-    bool resume();
-    bool cancel();
+    void start();
+    void cancel();
+    void verifyBackup();
 
-    // Status and information
-    Status getStatus() const;
+    // Job status
     std::string getId() const;
-    BackupConfig getConfig() const;
-    std::string getErrorMessage() const;
+    Status getStatus() const;
     double getProgress() const;
+    std::string getErrorMessage() const;
+
+    // Callbacks
+    void setProgressCallback(std::function<void(int)> callback);
+    void setStatusCallback(std::function<void(const std::string&)> callback);
 
 private:
-    bool prepareVM();
-    bool cleanupVM();
-    std::string createSnapshot();
-    bool removeSnapshot(const std::string& snapshotId);
-    void updateProgress(double progress);
-    void setStatus(Status status);
-    void setError(const std::string& error);
-
-    std::shared_ptr<VMwareConnection> connection_;
+    std::shared_ptr<BackupProvider> provider_;
     BackupConfig config_;
     std::string id_;
-    std::string snapshotId_;
-    std::atomic<Status> status_;
-    std::atomic<double> progress_;
+    Status status_;
+    double progress_;
     std::string errorMessage_;
+    std::atomic<bool> running_;
+    std::atomic<bool> paused_;
+    std::thread worker_;
+    mutable std::mutex mutex_;
+    std::function<void(int)> progressCallback_;
+    std::function<void(const std::string&)> statusCallback_;
+
+    // Helper methods
+    void workerFunction();
+    void updateStatus(const std::string& status);
+    void updateProgress(double progress);
+    void setError(const std::string& error);
+    std::string generateId() const;
 }; 

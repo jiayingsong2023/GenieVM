@@ -1,9 +1,12 @@
 #include "backup/backup_cli.hpp"
-#include "backup/backup_job.hpp"
+#include "backup/backup_manager.hpp"
 #include "backup/backup_scheduler.hpp"
 #include "backup/backup_verifier.hpp"
-#include "common/vmware_connection.hpp"
+#include "backup/backup_job.hpp"
+#include "backup/vmware/vmware_backup_provider.hpp"
+#include "backup/vmware/vmware_connection.hpp"
 #include "common/logger.hpp"
+#include "main/backup_main.hpp"
 #include <iostream>
 #include <iomanip>
 #include <ctime>
@@ -11,12 +14,32 @@
 #include <sstream>
 #include <chrono>
 #include <thread>
+#include <memory>
+#include <string>
+#include <vector>
+#include <nlohmann/json.hpp>
+#include <fstream>
+
+using json = nlohmann::json;
 
 BackupCLI::BackupCLI(std::shared_ptr<VMwareConnection> connection)
     : connection_(connection) {
+    // Create backup manager
+    manager_ = std::make_shared<BackupManager>(connection);
+    
+    // Create scheduler
+    scheduler_ = std::make_shared<BackupScheduler>(manager_);
+    
+    // Initialize scheduler
+    if (!scheduler_->initialize()) {
+        throw std::runtime_error("Failed to initialize backup scheduler");
+    }
 }
 
 BackupCLI::~BackupCLI() {
+    if (connection_) {
+        connection_->disconnect();
+    }
 }
 
 void BackupCLI::run(int argc, char* argv[]) {
@@ -26,195 +49,209 @@ void BackupCLI::run(int argc, char* argv[]) {
     }
 
     std::string command = argv[1];
-    try {
-        if (command == "backup") {
-            handleBackup(argc, argv);
-        } else if (command == "restore") {
-            handleRestore(argc, argv);
-        } else if (command == "schedule") {
-            handleSchedule(argc, argv);
-        } else if (command == "list") {
-            handleList(argc, argv);
-        } else if (command == "verify") {
-            handleVerify(argc, argv);
-        } else {
-            std::cerr << "Unknown command: " << command << std::endl;
-            printUsage();
-        }
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
-    }
-}
-
-void BackupCLI::printUsage() {
-    std::cout << "Usage: genievm <command> [options]\n\n"
-              << "Commands:\n"
-              << "  backup <vm-id> [options]    Perform backup of a VM\n"
-              << "  restore <vm-id> <backup-id>  Restore a VM from backup\n"
-              << "  schedule <vm-id> [options]   Schedule backup for a VM\n"
-              << "  list [vm-id]                List backups or scheduled backups\n"
-              << "  verify <backup-id>          Verify backup integrity\n\n"
-              << "Options:\n"
-              << "  --dir <path>                Backup directory\n"
-              << "  --compression <level>       Compression level (0-9)\n"
-              << "  --concurrent-disks <num>    Maximum number of concurrent disk operations\n"
-              << "  --retention <days>          Retention period in days\n"
-              << "  --max-backups <count>       Maximum number of backups to keep\n"
-              << "  --disable-cbt              Disable Changed Block Tracking\n"
-              << "  --exclude-disk <id>        Exclude disk from backup\n";
-}
-
-void BackupCLI::handleBackup(int argc, char* argv[]) {
-    if (argc < 3) {
-        std::cerr << "Usage: backup <vm-id> [options]" << std::endl;
-        return;
-    }
-
-    BackupConfig config;
-    config.vmId = argv[2];  // Changed from argv[1] to argv[2] since command is at argv[1]
-    parseBackupOptions(argc, argv, config);
-
-    auto job = std::make_shared<BackupJob>(connection_, config);
-    if (!job->start()) {
-        std::cerr << "Failed to start backup job" << std::endl;
-        return;
-    }
-
-    std::cout << "Backup job started. Progress: " << std::flush;
-    while (job->getStatus() == BackupJob::Status::RUNNING) {
-        std::cout << "\rProgress: " << (job->getProgress() * 100) << "%" << std::flush;
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
-    std::cout << std::endl;
-
-    if (job->getStatus() == BackupJob::Status::COMPLETED) {
-        std::cout << "Backup completed successfully" << std::endl;
+    if (command == "backup") {
+        handleBackupCommand(argc, argv);
+    } else if (command == "schedule") {
+        handleScheduleCommand(argc, argv);
+    } else if (command == "list") {
+        handleListCommand(argc, argv);
+    } else if (command == "verify") {
+        handleVerifyCommand(argc, argv);
     } else {
-        std::cerr << "Backup failed: " << job->getErrorMessage() << std::endl;
+        printUsage();
     }
 }
 
-void BackupCLI::handleRestore(int argc, char* argv[]) {
-    if (argc < 4) {
-        std::cerr << "Usage: restore <vm-id> <backup-id>" << std::endl;
-        return;
-    }
-
-    // TODO: Implement restore functionality
-    std::cout << "Restore functionality not implemented yet" << std::endl;
+void BackupCLI::printUsage() const {
+    // Delegate to backup_main.cpp's printBackupUsage
+    printBackupUsage();
 }
 
-void BackupCLI::handleSchedule(int argc, char* argv[]) {
-    if (argc < 3) {
-        std::cerr << "Usage: schedule <vm-id> [options]" << std::endl;
+void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
+    if (argc < 2 || (argc == 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help"))) {
+        printBackupUsage();
         return;
     }
 
     BackupConfig config;
-    config.vmId = argv[2];  // Changed from argv[1] to argv[2] since command is at argv[1]
-    parseBackupOptions(argc, argv, config);
+    std::string host, username, password;
 
-    scheduledBackups_[config.vmId] = config;
-    std::cout << "Backup scheduled for VM " << config.vmId << std::endl;
-}
-
-void BackupCLI::handleList(int argc, char* argv[]) {
-    if (scheduledBackups_.empty()) {
-        std::cout << "No scheduled backups" << std::endl;
-        return;
-    }
-
-    std::cout << "Scheduled backups:" << std::endl;
-    for (const auto& [vmId, config] : scheduledBackups_) {
-        std::cout << "VM: " << vmId << std::endl;
-        std::cout << "  Backup directory: " << config.backupDir << std::endl;
-        std::cout << "  Compression level: " << config.compressionLevel << std::endl;
-        std::cout << "  Max concurrent disks: " << config.maxConcurrentDisks << std::endl;
-        std::cout << "  Retention days: " << config.retentionDays << std::endl;
-        std::cout << "  Max backups: " << config.maxBackups << std::endl;
-        std::cout << "  CBT enabled: " << (config.enableCBT ? "yes" : "no") << std::endl;
-        if (!config.excludedDisks.empty()) {
-            std::cout << "  Excluded disks: ";
-            for (const auto& disk : config.excludedDisks) {
-                std::cout << disk << " ";
+    // Parse command line arguments
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "-h" || arg == "--help") {
+            printBackupUsage();
+            return;
+        } else if (arg == "-v" || arg == "--vm-name") {
+            if (i + 1 < argc) config.vmId = argv[++i];
+        } else if (arg == "-b" || arg == "--backup-dir") {
+            if (i + 1 < argc) config.backupDir = argv[++i];
+        } else if (arg == "-s" || arg == "--server") {
+            if (i + 1 < argc) host = argv[++i];
+        } else if (arg == "-u" || arg == "--username") {
+            if (i + 1 < argc) username = argv[++i];
+        } else if (arg == "-p" || arg == "--password") {
+            if (i + 1 < argc) password = argv[++i];
+        } else if (arg == "-i" || arg == "--incremental") {
+            config.incremental = true;
+        } else if (arg == "--schedule") {
+            if (i + 1 < argc) {
+                std::string timeStr = argv[++i];
+                config.scheduleType = "once";
+                config.schedule.hour = std::stoi(timeStr.substr(11, 2));
+                config.schedule.minute = std::stoi(timeStr.substr(14, 2));
             }
-            std::cout << std::endl;
+        } else if (arg == "--interval") {
+            if (i + 1 < argc) {
+                config.scheduleType = "interval";
+                // Store interval in minutes in the hour field
+                config.schedule.hour = std::stoi(argv[++i]) / 60;
+                config.schedule.minute = std::stoi(argv[i]) % 60;
+            }
+        } else if (arg == "--parallel") {
+            if (i + 1 < argc) config.maxConcurrentDisks = std::stoi(argv[++i]);
+        } else if (arg == "--compression") {
+            if (i + 1 < argc) config.compressionLevel = std::stoi(argv[++i]);
+        } else if (arg == "--retention") {
+            if (i + 1 < argc) config.retentionDays = std::stoi(argv[++i]);
+        } else if (arg == "--max-backups") {
+            if (i + 1 < argc) config.maxBackups = std::stoi(argv[++i]);
+        } else if (arg == "--disable-cbt") {
+            config.enableCBT = false;
+        } else if (arg == "--exclude-disk") {
+            if (i + 1 < argc) config.excludedDisks.push_back(argv[++i]);
         }
-        std::cout << std::endl;
+    }
+
+    // Validate required parameters
+    if (config.vmId.empty() || config.backupDir.empty() || 
+        host.empty() || username.empty() || password.empty()) {
+        std::cerr << "Error: Missing required parameters\n";
+        printBackupUsage();
+        return;
+    }
+
+    // Connect to vCenter/ESXi
+    if (!connection_->connect(host, username, password)) {
+        std::cerr << "Failed to connect to vCenter/ESXi\n";
+        return;
+    }
+
+    // Create and run backup job
+    auto provider = std::make_shared<VMwareBackupProvider>(connection_);
+    auto job = std::make_shared<BackupJob>(provider, config);
+    job->start();
+}
+
+void BackupCLI::handleScheduleCommand(int argc, char* argv[]) {
+    if (argc < 2 || (argc == 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help"))) {
+        printBackupUsage();
+        return;
+    }
+
+    std::string host = argv[2];
+    std::string username = argv[3];
+    std::string password = argv[4];
+    std::string schedule = argv[5];
+
+    connection_ = std::make_shared<VMwareConnection>();
+    if (!connection_->connect(host, username, password)) {
+        std::cerr << "Failed to connect to vCenter\n";
+        return;
+    }
+
+    BackupConfig config;
+    parseBackupOptions(argc, argv, config);
+    
+    // Parse schedule string (format: "daily|weekly|monthly HH:MM [day]")
+    std::istringstream ss(schedule);
+    std::string type, time;
+    ss >> type >> time;
+    
+    config.scheduleType = type;
+    
+    // Parse time
+    std::istringstream time_ss(time);
+    std::string hour_str, minute_str;
+    std::getline(time_ss, hour_str, ':');
+    std::getline(time_ss, minute_str, ':');
+    config.schedule.hour = std::stoi(hour_str);
+    config.schedule.minute = std::stoi(minute_str);
+    
+    // Parse day if provided
+    if (ss >> config.schedule.day) {
+        // Day was provided
+    } else {
+        // Default day based on schedule type
+        if (type == "weekly") {
+            config.schedule.day = 1;  // Monday
+        } else if (type == "monthly") {
+            config.schedule.day = 1;  // First day of month
+        }
+    }
+
+    scheduler_->addSchedule(config.vmId, config);
+    auto nextRunTime = scheduler_->getNextRunTime(config.vmId);
+    std::cout << "Next backup scheduled for: " << this->formatTime(std::chrono::system_clock::to_time_t(nextRunTime)) << std::endl;
+}
+
+void BackupCLI::handleListCommand(int argc, char* argv[]) {
+    if (argc < 2 || (argc == 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help"))) {
+        printBackupUsage();
+        return;
+    }
+
+    std::string host = argv[2];
+    std::string username = argv[3];
+    std::string password = argv[4];
+
+    connection_ = std::make_shared<VMwareConnection>();
+    if (!connection_->connect(host, username, password)) {
+        std::cerr << "Failed to connect to vCenter\n";
+        return;
+    }
+
+    std::vector<std::pair<std::string, BackupConfig>> schedules;
+    scheduler_->getAllSchedules(schedules);
+    for (const auto& [vmId, config] : schedules) {
+        std::cout << "VM: " << vmId << "\n";
+        std::cout << "Schedule Type: " << config.scheduleType << "\n";
+        std::cout << "Schedule Time: " << config.schedule.hour << ":" << config.schedule.minute << "\n";
+        if (config.scheduleType == "weekly") {
+            std::cout << "Day of Week: " << config.schedule.day << "\n";
+        } else if (config.scheduleType == "monthly") {
+            std::cout << "Day of Month: " << config.schedule.day << "\n";
+        }
+        std::cout << "Next run: " << this->formatTime(std::chrono::system_clock::to_time_t(scheduler_->getNextRunTime(vmId))) << "\n\n";
     }
 }
 
-void BackupCLI::handleVerify(int argc, char* argv[]) {
-    if (argc < 4) {
-        std::cerr << "Usage: verify <vm-id> <backup-id>" << std::endl;
+void BackupCLI::handleVerifyCommand(int argc, char* argv[]) {
+    if (argc < 2 || (argc == 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help"))) {
+        printBackupUsage();
         return;
     }
 
-    std::string vmId = argv[2];  // Changed from argv[1] to argv[2] since command is at argv[1]
-    std::string backupId = argv[3];
+    std::string host = argv[2];
+    std::string username = argv[3];
+    std::string password = argv[4];
 
-    // Get VM disk paths
-    std::vector<std::string> diskPaths;
-    if (!connection_->getVMDiskPaths(vmId, diskPaths)) {
-        std::cerr << "Failed to get VM disk paths" << std::endl;
+    connection_ = std::make_shared<VMwareConnection>();
+    if (!connection_->connect(host, username, password)) {
+        std::cerr << "Failed to connect to vCenter\n";
         return;
     }
 
-    // Find the backup directory
-    std::filesystem::path backupPath = std::filesystem::path("backups") / backupId;
-    if (!std::filesystem::exists(backupPath)) {
-        std::cerr << "Error: Backup not found: " << backupPath << std::endl;
-        return;
-    }
-
-    // Verify each disk
-    size_t totalDisks = diskPaths.size();
-    size_t verifiedDisks = 0;
-    bool allVerified = true;
-
-    std::cout << "Starting backup verification..." << std::endl;
-
-    for (const auto& diskPath : diskPaths) {
-        std::string backupDiskPath = (backupPath / std::filesystem::path(diskPath).filename()).string();
-        
-        // Create verifier
-        auto verifier = std::make_unique<BackupVerifier>(diskPath, backupDiskPath);
-        if (!verifier->initialize()) {
-            std::cerr << "Error: Failed to initialize verifier for disk: " << diskPath << std::endl;
-            allVerified = false;
-            continue;
-        }
-
-        // Set progress callback
-        verifier->setProgressCallback([&](double progress) {
-            std::cout << "\rDisk " << (verifiedDisks + 1) << "/" << totalDisks 
-                      << " - Progress: " << std::fixed << std::setprecision(1) 
-                      << (progress * 100) << "%" << std::flush;
-        });
-
-        // Perform verification
-        bool success = verifier->verifyFull();
-        std::cout << std::endl;
-
-        if (success) {
-            std::cout << "Disk verified successfully: " << diskPath << std::endl;
-            verifiedDisks++;
-        } else {
-            std::cerr << "Verification failed for disk: " << diskPath << std::endl;
-            std::cerr << "Error: " << verifier->getResult().errorMessage << std::endl;
-            allVerified = false;
-        }
-    }
-
-    // Print summary
-    std::cout << "\nVerification Summary:" << std::endl;
-    std::cout << "Total disks: " << totalDisks << std::endl;
-    std::cout << "Verified disks: " << verifiedDisks << std::endl;
-    std::cout << "Status: " << (allVerified ? "PASSED" : "FAILED") << std::endl;
+    BackupConfig config;
+    parseBackupOptions(argc, argv, config);
+    
+    auto provider = std::make_shared<VMwareBackupProvider>(connection_);
+    auto job = std::make_shared<BackupJob>(provider, config);
+    job->verifyBackup();
 }
 
 void BackupCLI::parseBackupOptions(int argc, char* argv[], BackupConfig& config) {
-    for (int i = 3; i < argc; ++i) {  // Start from argv[3] since command and vm-id are at argv[1] and argv[2]
+    for (int i = 5; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--dir" && i + 1 < argc) {
             config.backupDir = argv[++i];
@@ -234,13 +271,14 @@ void BackupCLI::parseBackupOptions(int argc, char* argv[], BackupConfig& config)
     }
 }
 
-std::string BackupCLI::formatTime(time_t time) {
+std::string BackupCLI::formatTime(time_t time) const {
+    std::tm* tm = std::localtime(&time);
     std::stringstream ss;
-    ss << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S");
+    ss << std::put_time(tm, "%Y-%m-%d %H:%M:%S");
     return ss.str();
 }
 
-time_t BackupCLI::parseTime(const std::string& timeStr) {
+time_t BackupCLI::parseTime(const std::string& timeStr) const {
     std::tm tm = {};
     std::stringstream ss(timeStr);
     ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
