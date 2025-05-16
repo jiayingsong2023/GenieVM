@@ -1,10 +1,11 @@
 #pragma once
 
+#include "backup/backup_config.hpp"
+#include "backup/vmware/vmware_connection.hpp"
 #include <string>
-#include <memory>
 #include <vector>
+#include <memory>
 #include <functional>
-#include "common/vmware_connection.hpp"
 #include <vixDiskLib.h>
 
 class DiskBackup {
@@ -15,11 +16,14 @@ public:
     ~DiskBackup();
 
     bool initialize();
-    bool startBackup(const std::string& vmId, const std::string& backupPath);
-    bool stopBackup();
-    bool pauseBackup();
-    bool resumeBackup();
+    bool startBackup(const std::string& vmId, const BackupConfig& config);
+    bool cancelBackup(const std::string& backupId);
+    bool pauseBackup(const std::string& backupId);
+    bool resumeBackup(const std::string& backupId);
+    bool getBackupStatus(const std::string& backupId, std::string& status, double& progress) const;
+
     void setProgressCallback(ProgressCallback callback);
+    void setStatusCallback(std::function<void(const std::string&)> callback);
 
     // Disk operations
     bool openDisks();
@@ -33,14 +37,18 @@ private:
     bool copyBlocks(VixDiskLibBlockList* blockList);
 
     std::shared_ptr<VMwareConnection> connection_;
-    std::string vmId_;
-    std::string backupPath_;
-    std::string sourcePath_;
+    std::string lastError_;
+    double progress_;
     ProgressCallback progressCallback_;
-    bool isRunning_;
-    bool isPaused_;
+    std::function<void(const std::string&)> statusCallback_;
 
     // VDDK handles
     VixDiskLibHandle sourceDisk_;
     VixDiskLibHandle backupDisk_;
+
+    // State variables
+    bool isRunning_;
+    bool isPaused_;
+    std::string sourcePath_;
+    std::string backupPath_;
 }; 

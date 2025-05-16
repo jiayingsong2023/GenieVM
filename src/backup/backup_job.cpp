@@ -1,154 +1,153 @@
 #include "backup/backup_job.hpp"
 #include "common/logger.hpp"
 #include <chrono>
-#include <thread>
 #include <random>
 #include <sstream>
 #include <iomanip>
 
-BackupJob::BackupJob(std::shared_ptr<VMwareConnection> connection, const BackupConfig& config)
-    : connection_(connection)
+BackupJob::BackupJob(std::shared_ptr<BackupProvider> provider, const BackupConfig& config)
+    : provider_(provider)
     , config_(config)
     , status_(Status::PENDING)
-    , progress_(0.0) {
-    
-    // Generate a unique ID for this job
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, 15);
-    std::stringstream ss;
-    ss << std::hex;
-    for (int i = 0; i < 8; i++) {
-        ss << dis(gen);
-    }
-    id_ = ss.str();
+    , progress_(0.0)
+    , running_(false)
+    , paused_(false)
+{
+    id_ = generateId();
 }
 
 BackupJob::~BackupJob() {
+    cancel();
+    if (worker_.joinable()) {
+        worker_.join();
+    }
+}
+
+void BackupJob::start() {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (status_ == Status::RUNNING) {
-        stop();
+        return;
     }
+
+    status_ = Status::RUNNING;
+    running_ = true;
+    worker_ = std::thread(&BackupJob::workerFunction, this);
 }
 
-bool BackupJob::start() {
-    if (status_ != Status::PENDING && status_ != Status::PAUSED) {
-        setError("Cannot start job in current state");
-        return false;
-    }
-
-    if (!prepareVM()) {
-        return false;
-    }
-
-    snapshotId_ = createSnapshot();
-    if (snapshotId_.empty()) {
-        cleanupVM();
-        return false;
-    }
-
-    setStatus(Status::RUNNING);
-    return true;
-}
-
-bool BackupJob::stop() {
-    if (status_ != Status::RUNNING && status_ != Status::PAUSED) {
-        setError("Cannot stop job in current state");
-        return false;
-    }
-
-    if (!snapshotId_.empty()) {
-        removeSnapshot(snapshotId_);
-    }
-
-    cleanupVM();
-    setStatus(Status::COMPLETED);
-    return true;
-}
-
-bool BackupJob::pause() {
+void BackupJob::cancel() {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (status_ != Status::RUNNING) {
-        setError("Cannot pause job in current state");
-        return false;
+        return;
     }
 
-    setStatus(Status::PAUSED);
-    return true;
+    running_ = false;
+    status_ = Status::CANCELLED;
+    if (worker_.joinable()) {
+        worker_.join();
+    }
 }
 
-bool BackupJob::resume() {
-    if (status_ != Status::PAUSED) {
-        setError("Cannot resume job in current state");
-        return false;
+void BackupJob::verifyBackup() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (status_ != Status::COMPLETED) {
+        setError("Cannot verify incomplete backup");
+        return;
     }
 
-    setStatus(Status::RUNNING);
-    return true;
-}
-
-bool BackupJob::cancel() {
-    if (status_ == Status::COMPLETED || status_ == Status::FAILED) {
-        setError("Cannot cancel job in current state");
-        return false;
+    try {
+        provider_->verifyBackup(config_);
+        updateStatus("Verification completed successfully");
+    } catch (const std::exception& e) {
+        setError(std::string("Verification failed: ") + e.what());
     }
-
-    if (!snapshotId_.empty()) {
-        removeSnapshot(snapshotId_);
-    }
-
-    cleanupVM();
-    setStatus(Status::CANCELLED);
-    return true;
-}
-
-BackupJob::Status BackupJob::getStatus() const {
-    return status_;
 }
 
 std::string BackupJob::getId() const {
     return id_;
 }
 
-BackupConfig BackupJob::getConfig() const {
-    return config_;
-}
-
-std::string BackupJob::getErrorMessage() const {
-    return errorMessage_;
+BackupJob::Status BackupJob::getStatus() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return status_;
 }
 
 double BackupJob::getProgress() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     return progress_;
 }
 
-bool BackupJob::prepareVM() {
-    // Implementation depends on VMwareConnection
-    return true;
+std::string BackupJob::getErrorMessage() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return errorMessage_;
 }
 
-bool BackupJob::cleanupVM() {
-    // Implementation depends on VMwareConnection
-    return true;
+void BackupJob::setProgressCallback(std::function<void(int)> callback) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    progressCallback_ = callback;
 }
 
-std::string BackupJob::createSnapshot() {
-    // Implementation depends on VMwareConnection
-    return "snapshot-123";  // Placeholder
+void BackupJob::setStatusCallback(std::function<void(const std::string&)> callback) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    statusCallback_ = callback;
 }
 
-bool BackupJob::removeSnapshot(const std::string& snapshotId) {
-    // Implementation depends on VMwareConnection
-    return true;
+void BackupJob::workerFunction() {
+    try {
+        updateStatus("Starting backup");
+        provider_->initialize();
+        
+        while (running_ && !paused_) {
+            // Perform backup operations
+            double progress = provider_->getProgress();
+            updateProgress(progress);
+            
+            if (progress >= 100.0) {
+                break;
+            }
+            
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        
+        if (running_) {
+            status_ = Status::COMPLETED;
+            updateStatus("Backup completed successfully");
+        }
+    } catch (const std::exception& e) {
+        setError(std::string("Backup failed: ") + e.what());
+        status_ = Status::FAILED;
+    }
+}
+
+void BackupJob::updateStatus(const std::string& status) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (statusCallback_) {
+        statusCallback_(status);
+    }
 }
 
 void BackupJob::updateProgress(double progress) {
+    std::lock_guard<std::mutex> lock(mutex_);
     progress_ = progress;
-}
-
-void BackupJob::setStatus(Status status) {
-    status_ = status;
+    if (progressCallback_) {
+        progressCallback_(static_cast<int>(progress));
+    }
 }
 
 void BackupJob::setError(const std::string& error) {
+    std::lock_guard<std::mutex> lock(mutex_);
     errorMessage_ = error;
-    Logger::error("Backup job " + id_ + " error: " + error);
+    status_ = Status::FAILED;
+    if (statusCallback_) {
+        statusCallback_(error);
+    }
+}
+
+std::string BackupJob::generateId() const {
+    auto now = std::chrono::system_clock::now();
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch());
+    
+    std::stringstream ss;
+    ss << std::hex << now_ms.count();
+    return ss.str();
 } 

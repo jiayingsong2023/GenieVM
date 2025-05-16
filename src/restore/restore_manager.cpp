@@ -19,8 +19,8 @@ RestoreManager::~RestoreManager() {
 
 bool RestoreManager::initialize() {
     try {
-        connection_ = std::make_unique<VMwareConnection>(host_, username_, password_);
-        if (!connection_->connect()) {
+        connection_ = std::make_unique<VMwareConnection>();
+        if (!connection_->connect(host_, username_, password_)) {
             Logger::error("Failed to connect to vCenter");
             return false;
         }

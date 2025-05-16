@@ -1,4 +1,4 @@
-#include "common/vmware_connection.hpp"
+#include "backup/vmware/vmware_connection.hpp"
 #include "common/logger.hpp"
 #include <vixDiskLib.h>
 #include <nlohmann/json.hpp>
@@ -9,38 +9,73 @@
 
 using json = nlohmann::json;
 
+VMwareConnection::VMwareConnection()
+    : connected_(false), vddkConnection_(nullptr) {
+}
+
 VMwareConnection::VMwareConnection(const std::string& host, const std::string& username, const std::string& password)
-    : host_(host), username_(username), password_(password), vddkConnection_(nullptr) {
+    : host_(host), username_(username), password_(password), connected_(false), vddkConnection_(nullptr) {
 }
 
 VMwareConnection::~VMwareConnection() {
+    disconnect();
     disconnectFromDisk();
 }
 
-bool VMwareConnection::connect() {
+bool VMwareConnection::connect(const std::string& host, const std::string& username, const std::string& password) {
+    host_ = host;
+    username_ = username;
+    password_ = password;
+    
     // Use REST API to connect to vCenter/ESXi
     // This is a placeholder. Replace with actual REST API call.
     Logger::info("Connecting to vCenter/ESXi using REST API");
+    connected_ = true;
     return true;
 }
 
 void VMwareConnection::disconnect() {
-    // Use REST API to disconnect from vCenter/ESXi
-    // This is a placeholder. Replace with actual REST API call.
-    Logger::info("Disconnecting from vCenter/ESXi using REST API");
+    if (connected_) {
+        // Use REST API to disconnect from vCenter/ESXi
+        // This is a placeholder. Replace with actual REST API call.
+        Logger::info("Disconnecting from vCenter/ESXi using REST API");
+        connected_ = false;
+    }
 }
 
-bool VMwareConnection::getVMHandle(const std::string& vmId, void*& vmHandle) {
-    // Use REST API to get VM handle
-    // This is a placeholder. Replace with actual REST API call.
-    Logger::info("Getting VM handle using REST API");
-    return true;
+bool VMwareConnection::isConnected() const {
+    return connected_;
 }
 
-bool VMwareConnection::getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) {
+std::string VMwareConnection::getLastError() const {
+    return lastError_;
+}
+
+std::vector<std::string> VMwareConnection::listVMs() const {
+    // Use REST API to list VMs
+    // This is a placeholder. Replace with actual REST API call.
+    Logger::info("Listing VMs using REST API");
+    return std::vector<std::string>();
+}
+
+bool VMwareConnection::getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) const {
     // Use REST API to get VM disk paths
     // This is a placeholder. Replace with actual REST API call.
     Logger::info("Getting VM disk paths using REST API");
+    return true;
+}
+
+bool VMwareConnection::getVMInfo(const std::string& vmId, std::string& name, std::string& status) const {
+    // Use REST API to get VM info
+    // This is a placeholder. Replace with actual REST API call.
+    Logger::info("Getting VM info using REST API");
+    return true;
+}
+
+bool VMwareConnection::getCBTInfo(const std::string& vmId, bool& enabled, std::string& changeId) const {
+    // Use REST API to get CBT info
+    // This is a placeholder. Replace with actual REST API call.
+    Logger::info("Getting CBT info using REST API");
     return true;
 }
 
@@ -58,77 +93,37 @@ bool VMwareConnection::disableCBT(const std::string& vmId) {
     return true;
 }
 
-bool VMwareConnection::createSnapshot(const std::string& vmId, const std::string& snapshotName, const std::string& description) {
-    // Use REST API to create snapshot
+bool VMwareConnection::isCBTEnabled(const std::string& vmId) const {
+    // Use REST API to check if CBT is enabled
     // This is a placeholder. Replace with actual REST API call.
-    Logger::info("Creating snapshot using REST API");
+    Logger::info("Checking if CBT is enabled using REST API");
     return true;
 }
 
-bool VMwareConnection::removeSnapshot(const std::string& vmId, const std::string& snapshotName) {
-    // Use REST API to remove snapshot
+bool VMwareConnection::getChangedBlocks(const std::string& vmId, const std::string& diskPath,
+                                      std::vector<std::pair<uint64_t, uint64_t>>& changedBlocks) const {
+    // Use REST API to get changed blocks
     // This is a placeholder. Replace with actual REST API call.
-    Logger::info("Removing snapshot using REST API");
+    Logger::info("Getting changed blocks using REST API");
     return true;
 }
 
 bool VMwareConnection::initializeVDDK() {
     VixError vixError = VixDiskLib_Init(1, 1, nullptr, nullptr, nullptr, nullptr);
     if (VIX_FAILED(vixError)) {
-        logError("Failed to initialize VDDK");
+        lastError_ = "Failed to initialize VDDK";
+        Logger::error(lastError_);
         return false;
     }
     return true;
 }
 
-void VMwareConnection::logError(const std::string& message) {
-    char* errorMsg = VixDiskLib_GetErrorText(vixError_, nullptr);
-    if (errorMsg) {
-        Logger::error(message + ": " + errorMsg);
-        VixDiskLib_FreeErrorText(errorMsg);
-    } else {
-        Logger::error(message);
-    }
+void VMwareConnection::cleanupVDDK() {
+    VixDiskLib_Exit();
 }
 
-bool VMwareConnection::connectToDisk(const std::string& diskPath) {
-    if (!initializeVDDK()) {
-        return false;
-    }
-
-    VixDiskLibConnectParams connectParams;
-    memset(&connectParams, 0, sizeof(connectParams));
-
-    // Allocate memory for strings to avoid const char* issues
-    char* vmxSpec = new char[diskPath.length() + 1];
-    char* serverName = new char[host_.length() + 1];
-    char* userName = new char[username_.length() + 1];
-    char* password = new char[password_.length() + 1];
-
-    strcpy(vmxSpec, diskPath.c_str());
-    strcpy(serverName, host_.c_str());
-    strcpy(userName, username_.c_str());
-    strcpy(password, password_.c_str());
-
-    connectParams.vmxSpec = vmxSpec;
-    connectParams.serverName = serverName;
-    connectParams.creds.uid.userName = userName;
-    connectParams.creds.uid.password = password;
-
-    vixError_ = VixDiskLib_Connect(&connectParams, &vddkConnection_);
-
-    // Clean up allocated memory
-    delete[] vmxSpec;
-    delete[] serverName;
-    delete[] userName;
-    delete[] password;
-
-    if (VIX_FAILED(vixError_)) {
-        logError("Failed to connect to disk");
-        return false;
-    }
-
-    return true;
+VixDiskLibConnection VMwareConnection::getVDDKConnection() const {
+    return vddkConnection_;
 }
 
 void VMwareConnection::disconnectFromDisk() {
@@ -136,9 +131,4 @@ void VMwareConnection::disconnectFromDisk() {
         VixDiskLib_Disconnect(vddkConnection_);
         vddkConnection_ = nullptr;
     }
-    VixDiskLib_Exit();
-}
-
-VixDiskLibConnection VMwareConnection::getVDDKConnection() const {
-    return vddkConnection_;
 } 
