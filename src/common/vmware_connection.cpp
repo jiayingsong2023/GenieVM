@@ -1,5 +1,6 @@
 #include "backup/vmware/vmware_connection.hpp"
 #include "common/logger.hpp"
+#include "common/vsphere_rest_client.hpp"
 #include <vixDiskLib.h>
 #include <nlohmann/json.hpp>
 #include <curl/curl.h>
@@ -15,6 +16,7 @@ VMwareConnection::VMwareConnection()
 
 VMwareConnection::VMwareConnection(const std::string& host, const std::string& username, const std::string& password)
     : host_(host), username_(username), password_(password), connected_(false), vddkConnection_(nullptr) {
+    restClient_ = std::make_unique<VSphereRestClient>(host, username, password);
 }
 
 VMwareConnection::~VMwareConnection() {
@@ -27,18 +29,21 @@ bool VMwareConnection::connect(const std::string& host, const std::string& usern
     username_ = username;
     password_ = password;
     
-    // Use REST API to connect to vCenter/ESXi
-    // This is a placeholder. Replace with actual REST API call.
-    Logger::info("Connecting to vCenter/ESXi using REST API");
-    connected_ = true;
-    return true;
+    if (!restClient_) {
+        restClient_ = std::make_unique<VSphereRestClient>(host, username, password);
+    }
+    
+    connected_ = restClient_->login();
+    if (!connected_) {
+        lastError_ = "Failed to connect to vCenter/ESXi";
+        Logger::error(lastError_);
+    }
+    return connected_;
 }
 
 void VMwareConnection::disconnect() {
     if (connected_) {
-        // Use REST API to disconnect from vCenter/ESXi
-        // This is a placeholder. Replace with actual REST API call.
-        Logger::info("Disconnecting from vCenter/ESXi using REST API");
+        restClient_->logout();
         connected_ = false;
     }
 }
@@ -52,60 +57,98 @@ std::string VMwareConnection::getLastError() const {
 }
 
 std::vector<std::string> VMwareConnection::listVMs() const {
-    // Use REST API to list VMs
-    // This is a placeholder. Replace with actual REST API call.
-    Logger::info("Listing VMs using REST API");
-    return std::vector<std::string>();
+    if (!connected_) {
+        return std::vector<std::string>();
+    }
+
+    std::vector<std::string> vmIds;
+    json vmInfo;
+    if (restClient_->getVMInfo("", vmInfo)) {
+        for (const auto& vm : vmInfo["value"]) {
+            vmIds.push_back(vm["vm"].get<std::string>());
+        }
+    }
+    return vmIds;
 }
 
 bool VMwareConnection::getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) const {
-    // Use REST API to get VM disk paths
-    // This is a placeholder. Replace with actual REST API call.
-    Logger::info("Getting VM disk paths using REST API");
-    return true;
+    if (!connected_) {
+        return false;
+    }
+    return restClient_->getVMDiskPaths(vmId, diskPaths);
 }
 
 bool VMwareConnection::getVMInfo(const std::string& vmId, std::string& name, std::string& status) const {
-    // Use REST API to get VM info
-    // This is a placeholder. Replace with actual REST API call.
-    Logger::info("Getting VM info using REST API");
-    return true;
+    if (!connected_) {
+        return false;
+    }
+
+    json vmInfo;
+    if (restClient_->getVMInfo(vmId, vmInfo)) {
+        name = vmInfo["name"].get<std::string>();
+        status = vmInfo["power_state"].get<std::string>();
+        return true;
+    }
+    return false;
 }
 
 bool VMwareConnection::getCBTInfo(const std::string& vmId, bool& enabled, std::string& changeId) const {
-    // Use REST API to get CBT info
-    // This is a placeholder. Replace with actual REST API call.
-    Logger::info("Getting CBT info using REST API");
-    return true;
+    if (!connected_) {
+        return false;
+    }
+
+    json vmInfo;
+    if (restClient_->getVMInfo(vmId, vmInfo)) {
+        enabled = vmInfo["change_tracking_enabled"].get<bool>();
+        changeId = vmInfo["change_tracking_id"].get<std::string>();
+        return true;
+    }
+    return false;
 }
 
 bool VMwareConnection::enableCBT(const std::string& vmId) {
-    // Use REST API to enable CBT
-    // This is a placeholder. Replace with actual REST API call.
-    Logger::info("Enabling CBT using REST API");
-    return true;
+    if (!connected_) {
+        return false;
+    }
+    return restClient_->enableCBT(vmId);
 }
 
 bool VMwareConnection::disableCBT(const std::string& vmId) {
-    // Use REST API to disable CBT
-    // This is a placeholder. Replace with actual REST API call.
-    Logger::info("Disabling CBT using REST API");
-    return true;
+    if (!connected_) {
+        return false;
+    }
+    return restClient_->disableCBT(vmId);
 }
 
 bool VMwareConnection::isCBTEnabled(const std::string& vmId) const {
-    // Use REST API to check if CBT is enabled
-    // This is a placeholder. Replace with actual REST API call.
-    Logger::info("Checking if CBT is enabled using REST API");
-    return true;
+    if (!connected_) {
+        return false;
+    }
+
+    bool enabled;
+    std::string changeId;
+    return getCBTInfo(vmId, enabled, changeId) && enabled;
 }
 
 bool VMwareConnection::getChangedBlocks(const std::string& vmId, const std::string& diskPath,
                                       std::vector<std::pair<uint64_t, uint64_t>>& changedBlocks) const {
-    // Use REST API to get changed blocks
-    // This is a placeholder. Replace with actual REST API call.
-    Logger::info("Getting changed blocks using REST API");
-    return true;
+    if (!connected_) {
+        return false;
+    }
+
+    json diskInfo;
+    if (restClient_->getVMDiskInfo(vmId, diskPath, diskInfo)) {
+        if (diskInfo.contains("changed_blocks")) {
+            for (const auto& block : diskInfo["changed_blocks"]) {
+                changedBlocks.emplace_back(
+                    block["start"].get<uint64_t>(),
+                    block["length"].get<uint64_t>()
+                );
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 bool VMwareConnection::initializeVDDK() {

@@ -280,6 +280,92 @@ EOF
     log "INFO" "Test VM created successfully: $vm_name"
 }
 
+# Function to remove test VM
+remove_test_vm() {
+    local vm_name=$1
+    
+    log "INFO" "Removing test VM: $vm_name"
+    
+    # Create Python script for VM removal
+    local remove_script=$(mktemp)
+    cat > "$remove_script" << EOF
+from pyVim.connect import SmartConnect, Disconnect
+from pyVmomi import vim
+import ssl
+import json
+import time
+
+# Read config
+with open("$CONFIG_FILE", 'r') as f:
+    config = json.load(f)
+
+# Connect to vSphere
+if config['vsphere']['insecure']:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS)
+    context.verify_mode = ssl.CERT_NONE
+else:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS)
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.check_hostname = True
+
+si = SmartConnect(
+    host=config['vsphere']['host'],
+    port=config['vsphere']['port'],
+    user=config['vsphere']['username'],
+    pwd=config['vsphere']['password'],
+    sslContext=context
+)
+
+# Search for VM
+content = si.RetrieveContent()
+container = content.rootFolder
+view_type = [vim.VirtualMachine]
+recursive = True
+container_view = content.viewManager.CreateContainerView(container, view_type, recursive)
+vms = container_view.view
+
+target_vm = None
+for vm in vms:
+    if vm.name == "$vm_name":
+        target_vm = vm
+        break
+
+if target_vm:
+    # Power off VM if it's running
+    if target_vm.runtime.powerState == vim.VirtualMachinePowerState.poweredOn:
+        log("INFO", "Powering off VM before removal...")
+        task = target_vm.PowerOffVM_Task()
+        while task.info.state not in [vim.TaskInfo.State.success, vim.TaskInfo.State.error]:
+            time.sleep(1)
+    
+    # Remove VM
+    log("INFO", "Removing VM...")
+    task = target_vm.Destroy_Task()
+    while task.info.state not in [vim.TaskInfo.State.success, vim.TaskInfo.State.error]:
+        time.sleep(1)
+    
+    if task.info.state == vim.TaskInfo.State.success:
+        log("INFO", "VM removed successfully")
+    else:
+        log("ERROR", f"Failed to remove VM: {task.info.error.msg}")
+        sys.exit(1)
+else:
+    log("WARNING", "VM not found: $vm_name")
+
+Disconnect(si)
+EOF
+    
+    # Run VM removal
+    if ! python3 "$remove_script"; then
+        log "ERROR" "Failed to remove VM: $vm_name"
+        rm "$remove_script"
+        exit 1
+    fi
+    
+    rm "$remove_script"
+    log "INFO" "VM removal completed successfully"
+}
+
 # Function to setup test environment
 setup_test_environment() {
     log "INFO" "Setting up test environment..."

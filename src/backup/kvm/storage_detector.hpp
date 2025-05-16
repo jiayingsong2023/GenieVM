@@ -2,13 +2,8 @@
 
 #include <string>
 #include <vector>
-
-struct StorageInfo {
-    std::string path;
-    std::string type;
-    uint64_t size;
-    bool isReadOnly;
-};
+#include <sys/ioctl.h>
+#include <linux/fs.h>
 
 class StorageDetector {
 public:
@@ -17,6 +12,13 @@ public:
         QCOW2,
         LVM,
         RAW
+    };
+
+    struct StorageInfo {
+        std::string path;
+        StorageType type;
+        uint64_t size;
+        bool isReadOnly;
     };
 
     StorageDetector() = default;
@@ -31,4 +33,5 @@ public:
     static bool isQCOW2(const std::string& path);
     static bool isLVM(const std::string& path);
     static bool isRaw(const std::string& path);
+    static uint64_t getDeviceSize(const std::string& path);
 }; 

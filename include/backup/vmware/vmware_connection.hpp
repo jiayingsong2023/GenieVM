@@ -6,6 +6,9 @@
 #include <utility>
 #include <vixDiskLib.h>
 
+// Forward declaration
+class VSphereRestClient;
+
 class VMwareConnection {
 public:
     VMwareConnection();
@@ -43,4 +46,5 @@ private:
     bool connected_;
     VixDiskLibConnection vddkConnection_;
     std::string lastError_;
+    std::unique_ptr<VSphereRestClient> restClient_;
 }; 
