@@ -4,7 +4,7 @@
 #include <string>
 #include <functional>
 #include "backup/backup_provider.hpp"
-#include "backup/backup_config.hpp"
+#include "backup/vm_config.hpp"
 #include <vector>
 #include <thread>
 #include <mutex>

@@ -5,13 +5,17 @@
 #include <chrono>
 #include <thread>
 
-RestoreJob::RestoreJob(const std::string& vmId, const std::string& backupId, const BackupConfig& config)
+RestoreJob::RestoreJob(const std::string& vmId, const std::string& backupId, const RestoreConfig& config)
     : vmId_(vmId)
     , backupId_(backupId)
     , config_(config)
     , status_(RestoreStatus::PENDING)
     , progress_(0.0)
-    , cancelled_(false) {
+    , cancelled_(false)
+    , vsphereClient_(std::make_shared<VSphereRestClient>(
+        config.vsphereHost,
+        config.vsphereUsername,
+        config.vspherePassword)) {
 }
 
 RestoreJob::~RestoreJob() {
@@ -89,7 +93,7 @@ std::string RestoreJob::getBackupId() const {
     return backupId_;
 }
 
-const BackupConfig& RestoreJob::getConfig() const {
+const RestoreConfig& RestoreJob::getConfig() const {
     return config_;
 }
 
@@ -123,7 +127,62 @@ void RestoreJob::runRestore() {
 }
 
 bool RestoreJob::validateConfig() {
-    // TODO: Implement config validation
+    // Validate VM ID
+    if (config_.vmId.empty()) {
+        errorMessage_ = "VM ID is required";
+        return false;
+    }
+
+    // Validate backup ID
+    if (config_.backupId.empty()) {
+        errorMessage_ = "Backup ID is required";
+        return false;
+    }
+
+    // Validate target datastore
+    if (config_.targetDatastore.empty()) {
+        errorMessage_ = "Target datastore is required";
+        return false;
+    }
+
+    // Validate target resource pool
+    if (config_.targetResourcePool.empty()) {
+        errorMessage_ = "Target resource pool is required";
+        return false;
+    }
+
+    // Validate disk configurations
+    if (config_.diskConfigs.empty()) {
+        errorMessage_ = "At least one disk configuration is required";
+        return false;
+    }
+
+    for (const auto& diskConfig : config_.diskConfigs) {
+        // Validate disk path
+        if (diskConfig.path.empty()) {
+            errorMessage_ = "Disk path is required for all disks";
+            return false;
+        }
+
+        // Validate disk size
+        if (diskConfig.sizeKB <= 0) {
+            errorMessage_ = "Disk size must be greater than 0";
+            return false;
+        }
+
+        // Validate disk format
+        if (diskConfig.format.empty()) {
+            errorMessage_ = "Disk format is required";
+            return false;
+        }
+
+        // Validate disk type
+        if (diskConfig.type.empty()) {
+            errorMessage_ = "Disk type is required";
+            return false;
+        }
+    }
+
     return true;
 }
 

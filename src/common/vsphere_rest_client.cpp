@@ -733,3 +733,17 @@ size_t VSphereRestClient::writeCallback(void* contents, size_t size, size_t nmem
     userp->append((char*)contents, realsize);
     return realsize;
 }
+
+bool VSphereRestClient::getBackup(const std::string& backupId, std::string& response) {
+    if (!isLoggedIn_) {
+        lastError_ = "Not logged in to vSphere";
+        return false;
+    }
+
+    nlohmann::json jsonResponse;
+    bool success = makeRequest("GET", "/rest/vcenter/backup/" + backupId, nlohmann::json(), jsonResponse);
+    if (success) {
+        response = jsonResponse.dump();
+    }
+    return success;
+}

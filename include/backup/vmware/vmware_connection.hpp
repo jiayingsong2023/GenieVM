@@ -5,6 +5,7 @@
 #include <memory>
 #include <utility>
 #include <vixDiskLib.h>
+#include <nlohmann/json.hpp>
 
 // Forward declaration
 class VSphereRestClient;
@@ -38,6 +39,9 @@ public:
     bool isCBTEnabled(const std::string& vmId) const;
     bool getChangedBlocks(const std::string& vmId, const std::string& diskPath,
                          std::vector<std::pair<uint64_t, uint64_t>>& changedBlocks) const;
+
+    // Backup operations
+    bool getBackup(const std::string& backupId, nlohmann::json& backupInfo);
 
 private:
     std::string host_;

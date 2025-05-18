@@ -1,6 +1,6 @@
 #pragma once
 
-#include "backup/backup_config.hpp"
+#include "backup/vm_config.hpp"
 #include "backup/vmware/vmware_connection.hpp"
 #include <string>
 #include <vector>

@@ -51,8 +51,11 @@ public:
     std::string getLastError() const override;
     void clearLastError() override;
 
+    // Backup verification
+    bool verifyBackup(const std::string& backupId) override;
+    bool calculateBackupChecksum(const std::string& backupPath, std::string& checksum);
+
     // Additional methods
-    void verifyBackup(const BackupConfig& config) override;
     double getProgress() const override;
 
 private:

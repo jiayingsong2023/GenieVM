@@ -15,6 +15,8 @@ public:
     // Authentication
     bool login();
     bool logout();
+    bool isLoggedIn() const;
+    std::string getLastError() const;
 
     // VM Operations
     bool getVMInfo(const std::string& vmId, nlohmann::json& vmInfo);
@@ -76,6 +78,7 @@ public:
     bool setBackupSchedule(const std::string& vmId, const nlohmann::json& schedule, nlohmann::json& response);
     bool getBackupRetention(const std::string& vmId, nlohmann::json& response);
     bool setBackupRetention(const std::string& vmId, const nlohmann::json& retention, nlohmann::json& response);
+    bool getBackup(const std::string& backupId, std::string& response);
 
 private:
     // Helper methods
@@ -93,4 +96,5 @@ private:
     std::string sessionId_;
     CURL* curl_;
     bool isLoggedIn_;
+    std::string lastError_;
 }; 

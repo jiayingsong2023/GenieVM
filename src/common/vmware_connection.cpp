@@ -174,4 +174,33 @@ void VMwareConnection::disconnectFromDisk() {
         VixDiskLib_Disconnect(vddkConnection_);
         vddkConnection_ = nullptr;
     }
+}
+
+bool VMwareConnection::getBackup(const std::string& backupId, nlohmann::json& backupInfo)  {
+    if (!connected_) {
+        lastError_ = "Not connected to vSphere";
+        return false;
+    }
+
+    try {
+        // Use the REST client to get backup information
+        if (!restClient_) {
+            lastError_ = "REST client not initialized";
+            return false;
+        }
+
+        // Get backup details from the REST API
+        std::string response;
+        if (!restClient_->getBackup(backupId, response)) {
+            lastError_ = "Failed to get backup information from REST API";
+            return false;
+        }
+
+        // Parse the response into JSON
+        backupInfo = nlohmann::json::parse(response);
+        return true;
+    } catch (const std::exception& e) {
+        lastError_ = std::string("Error getting backup information: ") + e.what();
+        return false;
+    }
 } 

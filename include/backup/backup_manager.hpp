@@ -3,7 +3,7 @@
 #include "backup/backup_provider.hpp"
 #include "backup/vmware/vmware_backup_provider.hpp"
 #include "backup/vmware/vmware_connection.hpp"
-#include "backup/backup_config.hpp"
+#include "backup/vm_config.hpp"
 #include "backup/backup_job.hpp"
 #include <memory>
 #include <string>

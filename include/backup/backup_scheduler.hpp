@@ -1,6 +1,7 @@
 #pragma once
 
-#include "backup/backup_config.hpp"
+#include "backup/vm_config.hpp"
+#include "backup/backup_manager.hpp"
 #include "common/scheduler.hpp"
 #include "common/logger.hpp"
 #include <memory>
@@ -9,6 +10,9 @@
 #include <vector>
 #include <mutex>
 #include <chrono>
+#include <thread>
+#include <condition_variable>
+#include <queue>
 
 class BackupManager;
 

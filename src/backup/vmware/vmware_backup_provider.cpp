@@ -3,6 +3,7 @@
 #include <sstream>
 #include <chrono>
 #include <thread>
+#include <nlohmann/json.hpp>
 
 VMwareBackupProvider::VMwareBackupProvider(std::shared_ptr<VMwareConnection> connection)
     : connection_(connection)
@@ -203,9 +204,68 @@ void VMwareBackupProvider::clearLastError() {
     lastError_.clear();
 }
 
-void VMwareBackupProvider::verifyBackup(const BackupConfig& config) {
+bool VMwareBackupProvider::verifyBackup(const std::string& backupId) {
     if (!connection_ || !connection_->isConnected()) {
-        throw std::runtime_error("Not connected to vCenter");
+        lastError_ = "Not connected to vSphere";
+        return false;
     }
-    // TODO: Implement backup verification
+
+    // Get backup details
+    nlohmann::json backupInfo;
+    if (!connection_->getBackup(backupId, backupInfo)) {
+        lastError_ = "Failed to get backup information";
+        return false;
+    }
+
+    // Verify backup state
+    std::string state = backupInfo["state"];
+    if (state != "COMPLETED") {
+        lastError_ = "Backup is not in completed state: " + state;
+        return false;
+    }
+
+    // Verify backup size
+    if (!backupInfo.contains("size") || backupInfo["size"].get<int64_t>() <= 0) {
+        lastError_ = "Invalid backup size";
+        return false;
+    }
+
+    // Verify backup timestamp
+    if (!backupInfo.contains("timestamp")) {
+        lastError_ = "Missing backup timestamp";
+        return false;
+    }
+
+    // Verify backup location
+    if (!backupInfo.contains("location") || backupInfo["location"].get<std::string>().empty()) {
+        lastError_ = "Invalid backup location";
+        return false;
+    }
+
+    // Verify backup checksum if available
+    if (backupInfo.contains("checksum")) {
+        std::string storedChecksum = backupInfo["checksum"];
+        std::string calculatedChecksum;
+        
+        // Calculate checksum of backup file
+        if (!calculateBackupChecksum(backupInfo["location"], calculatedChecksum)) {
+            lastError_ = "Failed to calculate backup checksum";
+            return false;
+        }
+
+        // Compare checksums
+        if (storedChecksum != calculatedChecksum) {
+            lastError_ = "Backup checksum verification failed";
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool VMwareBackupProvider::calculateBackupChecksum(const std::string& backupPath, std::string& checksum) {
+    // TODO: Implement checksum calculation
+    // This should calculate a checksum (e.g., SHA-256) of the backup file
+    checksum = "dummy_checksum";  // Placeholder
+    return true;
 } 

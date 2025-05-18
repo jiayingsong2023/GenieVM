@@ -1,6 +1,6 @@
 #pragma once
 
-#include "backup/backup_config.hpp"
+#include "backup/vm_config.hpp"
 #include "backup/backup_job.hpp"
 #include "backup/backup_manager.hpp"
 #include "backup/backup_scheduler.hpp"

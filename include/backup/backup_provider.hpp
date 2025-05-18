@@ -4,7 +4,7 @@
 #include <memory>
 #include <vector>
 #include <functional>
-#include "backup/backup_config.hpp"
+#include "backup/vm_config.hpp"
 
 class BackupProvider {
 public:
@@ -52,6 +52,7 @@ public:
     virtual std::string getLastError() const = 0;
     virtual void clearLastError() = 0;
 
-    virtual void verifyBackup(const BackupConfig& config) = 0;
+    // Backup verification
+    virtual bool verifyBackup(const std::string& backupId) = 0;
     virtual double getProgress() const = 0;
 }; 

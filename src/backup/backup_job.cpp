@@ -55,7 +55,10 @@ void BackupJob::verifyBackup() {
     }
 
     try {
-        provider_->verifyBackup(config_);
+        if (!provider_->verifyBackup(id_)) {
+            setError("Verification failed: " + provider_->getLastError());
+            return;
+        }
         updateStatus("Verification completed successfully");
     } catch (const std::exception& e) {
         setError(std::string("Verification failed: ") + e.what());

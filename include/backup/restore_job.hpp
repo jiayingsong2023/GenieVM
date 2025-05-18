@@ -16,7 +16,7 @@
 #include <nlohmann/json.hpp>
 #include "common/logger.hpp"
 #include "common/vsphere_manager.hpp"
-#include "backup/backup_config.hpp"
+#include "backup/vm_config.hpp"
 
 enum class RestoreStatus {
     NOT_FOUND,
@@ -30,7 +30,7 @@ enum class RestoreStatus {
 
 class RestoreJob {
 public:
-    RestoreJob(const std::string& vmId, const std::string& backupId, const BackupConfig& config);
+    RestoreJob(const std::string& vmId, const std::string& backupId, const RestoreConfig& config);
     ~RestoreJob();
 
     // Job control
@@ -43,7 +43,7 @@ public:
     RestoreStatus getStatus() const;
     std::string getVMId() const;
     std::string getBackupId() const;
-    const BackupConfig& getConfig() const;
+    const RestoreConfig& getConfig() const;
     double getProgress() const;
     std::string getErrorMessage() const;
 
@@ -55,12 +55,12 @@ private:
 
     std::string vmId_;
     std::string backupId_;
-    BackupConfig config_;
+    RestoreConfig config_;
     RestoreStatus status_;
     double progress_;
+    bool cancelled_;
+    std::future<void> restoreFuture_;
     std::string errorMessage_;
     mutable std::mutex mutex_;
-    std::future<void> restoreFuture_;
-    std::atomic<bool> cancelled_;
     std::shared_ptr<VSphereRestClient> vsphereClient_;
 }; 
