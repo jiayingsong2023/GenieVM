@@ -43,6 +43,7 @@ private:
     std::string host_;
     std::string username_;
     std::string password_;
+    std::string vmId_;
     bool initialized_;
 
     // Helper methods

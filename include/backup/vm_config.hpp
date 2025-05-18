@@ -10,6 +10,7 @@ struct DiskConfig {
     int64_t sizeKB;       // Size in KB
     std::string format;   // Disk format (e.g., "thin", "thick", "eagerZeroedThick")
     std::string type;     // Disk type (e.g., "scsi", "ide", "sata")
+    bool thinProvisioned; // Whether the disk is thin provisioned
 };
 
 // Configuration for backup operations
@@ -37,8 +38,13 @@ struct BackupConfig {
 struct RestoreConfig {
     std::string vmId;
     std::string backupId;
+    std::string vmName;           // Name of the VM to create
     std::string targetDatastore;
     std::string targetResourcePool;
+    std::string guestOS;          // Guest OS type
+    int numCPUs = 2;             // Number of CPUs
+    int memoryMB = 4096;         // Memory size in MB
+    bool powerOnAfterRestore = false;  // Whether to power on the VM after restore
     std::vector<DiskConfig> diskConfigs;
     // vSphere connection parameters
     std::string vsphereHost;

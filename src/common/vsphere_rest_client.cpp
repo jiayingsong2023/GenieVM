@@ -55,6 +55,11 @@ bool VSphereRestClient::logout() {
     return success;
 }
 
+std::string VSphereRestClient::getLastError() const {
+    //TODO
+    return "";
+}
+
 bool VSphereRestClient::makeRequest(const std::string& method, const std::string& endpoint, 
                                   const nlohmann::json& data, nlohmann::json& response) {
     if (!curl_) {

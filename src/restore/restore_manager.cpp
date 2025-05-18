@@ -10,6 +10,7 @@ RestoreManager::RestoreManager(const std::string& host,
     : host_(host)
     , username_(username)
     , password_(password)
+    , vmId_("")
     , initialized_(false) {
 }
 
@@ -95,14 +96,67 @@ std::vector<std::string> RestoreManager::getAvailableBackups(const std::string& 
 bool RestoreManager::createVM(const std::string& vmName,
                             const std::string& datastore,
                             const std::string& resourcePool) {
-    // TODO: Implement VM creation using VMwareConnection
-    return true;
+    if (!initialized_) {
+        Logger::error("RestoreManager not initialized");
+        return false;
+    }
+
+    try {
+        // Create VM configuration
+        nlohmann::json vmConfig = {
+            {"name", vmName},
+            {"datastore", datastore},
+            {"resource_pool", resourcePool}
+        };
+
+        // Create VM
+        nlohmann::json response;
+        if (!connection_->createVM(vmConfig, response)) {
+            Logger::error("Failed to create VM: " + connection_->getLastError());
+            return false;
+        }
+
+        // Store VM ID
+        vmId_ = response["value"].get<std::string>();
+        return true;
+    } catch (const std::exception& e) {
+        Logger::error("Exception in createVM: " + std::string(e.what()));
+        return false;
+    }
 }
 
 bool RestoreManager::attachDisks(const std::string& vmName,
                                const std::vector<std::string>& diskPaths) {
-    // TODO: Implement disk attachment using VMwareConnection
-    return true;
+    if (!initialized_) {
+        Logger::error("RestoreManager not initialized");
+        return false;
+    }
+
+    if (vmId_.empty()) {
+        Logger::error("VM ID not set");
+        return false;
+    }
+
+    try {
+        for (const auto& diskPath : diskPaths) {
+            // Create disk configuration
+            nlohmann::json diskConfig = {
+                {"path", diskPath},
+                {"type", "scsi"}
+            };
+
+            // Attach disk
+            nlohmann::json response;
+            if (!connection_->attachDisk(vmId_, diskConfig, response)) {
+                Logger::error("Failed to attach disk: " + connection_->getLastError());
+                return false;
+            }
+        }
+        return true;
+    } catch (const std::exception& e) {
+        Logger::error("Exception in attachDisks: " + std::string(e.what()));
+        return false;
+    }
 }
 
 bool RestoreManager::validateBackup(const std::string& backupDir) {

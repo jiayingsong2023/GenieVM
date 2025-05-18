@@ -31,6 +31,9 @@ public:
     std::vector<std::string> listVMs() const;
     bool getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) const;
     bool getVMInfo(const std::string& vmId, std::string& name, std::string& status) const;
+    bool createVM(const nlohmann::json& vmConfig, nlohmann::json& response);
+    bool attachDisk(const std::string& vmId, const nlohmann::json& diskConfig, nlohmann::json& response);
+    bool powerOnVM(const std::string& vmId);
 
     // CBT operations
     bool getCBTInfo(const std::string& vmId, bool& enabled, std::string& changeId) const;
@@ -42,6 +45,7 @@ public:
 
     // Backup operations
     bool getBackup(const std::string& backupId, nlohmann::json& backupInfo);
+    bool verifyBackup(const std::string& backupId, nlohmann::json& response);
 
 private:
     std::string host_;

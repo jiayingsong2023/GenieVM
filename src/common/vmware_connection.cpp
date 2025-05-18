@@ -203,4 +203,93 @@ bool VMwareConnection::getBackup(const std::string& backupId, nlohmann::json& ba
         lastError_ = std::string("Error getting backup information: ") + e.what();
         return false;
     }
+}
+
+bool VMwareConnection::createVM(const nlohmann::json& vmConfig, nlohmann::json& response) {
+    if (!isConnected()) {
+        lastError_ = "Not connected to vSphere";
+        return false;
+    }
+
+    try {
+        std::string responseStr;
+        nlohmann::json responseJson;
+        if (!restClient_->createVM(vmConfig, responseJson)) {
+            lastError_ = "Failed to create VM: " + restClient_->getLastError();
+            return false;
+        }
+        response = responseJson;
+        return true;
+    } catch (const std::exception& e) {
+        lastError_ = "Exception in createVM: " + std::string(e.what());
+        return false;
+    }
+}
+
+bool VMwareConnection::attachDisk(const std::string& vmId, const nlohmann::json& diskConfig, nlohmann::json& response) {
+    if (!isConnected()) {
+        lastError_ = "Not connected to vSphere";
+        return false;
+    }
+
+    try {
+        std::string responseStr;
+        nlohmann::json responseJson;
+        if (!restClient_->attachDisk(vmId, diskConfig, responseJson)) {
+            lastError_ = "Failed to attach disk: " + restClient_->getLastError();
+            return false;
+        }
+        response = responseJson;
+        return true;
+    } catch (const std::exception& e) {
+        lastError_ = "Exception in attachDisk: " + std::string(e.what());
+        return false;
+    }
+}
+
+bool VMwareConnection::powerOnVM(const std::string& vmId) {
+    if (!connected_) {
+        lastError_ = "Not connected to vSphere";
+        return false;
+    }
+
+    try {
+        // Use the REST client to power on VM
+        if (!restClient_) {
+            lastError_ = "REST client not initialized";
+            return false;
+        }
+
+        // Power on VM using REST API
+        if (!restClient_->powerOnVM(vmId)) {
+            lastError_ = "Failed to power on VM via REST API";
+            return false;
+        }
+
+        return true;
+    } catch (const std::exception& e) {
+        lastError_ = std::string("Error powering on VM: ") + e.what();
+        return false;
+    }
+}
+
+bool VMwareConnection::verifyBackup(const std::string& backupId, nlohmann::json& response) {
+    if (!isConnected()) {
+        lastError_ = "Not connected to vSphere";
+        return false;
+    }
+
+    try {
+        std::string responseStr;
+        nlohmann::json responseJson;
+        if (!restClient_->verifyBackup(backupId, responseJson)) {
+            lastError_ = "Failed to verify backup: " + restClient_->getLastError();
+            return false;
+        }
+        response = responseJson;
+        return true;
+    } catch (const std::exception& e) {
+        lastError_ = "Exception in verifyBackup: " + std::string(e.what());
+        return false;
+    }
 } 

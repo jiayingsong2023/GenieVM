@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <chrono>
 #include <thread>
+#include <nlohmann/json.hpp>
 
 RestoreJob::RestoreJob(const std::string& vmId, const std::string& backupId, const RestoreConfig& config)
     : vmId_(vmId)
@@ -109,13 +110,81 @@ std::string RestoreJob::getErrorMessage() const {
 
 void RestoreJob::runRestore() {
     try {
-        // TODO: Implement actual restore logic
-        // This should use vsphereClient_ to perform the restore
-        // and call updateProgress() periodically
+        // Login to vSphere
+        if (!vsphereClient_->login()) {
+            throw std::runtime_error("Failed to login to vSphere");
+        }
+
+        // Get backup information
+        std::string backupInfo;
+        if (!vsphereClient_->getBackup(backupId_, backupInfo)) {
+            throw std::runtime_error("Failed to get backup information");
+        }
+
+        // Parse backup information
+        nlohmann::json backupJson = nlohmann::json::parse(backupInfo);
         
+        // Create VM configuration
+        nlohmann::json vmConfig = {
+            {"name", config_.vmName},
+            {"datastore_id", config_.targetDatastore},
+            {"resource_pool_id", config_.targetResourcePool},
+            {"num_cpus", config_.numCPUs},
+            {"memory_mb", config_.memoryMB},
+            {"guest_os", config_.guestOS}
+        };
+
+        // Create VM
+        nlohmann::json response;
+        if (!vsphereClient_->createVM(vmConfig, response)) {
+            throw std::runtime_error("Failed to create VM");
+        }
+
+        std::string newVmId = response["value"].get<std::string>();
+        updateProgress(0.2);  // 20% complete
+
         if (cancelled_) {
             status_ = RestoreStatus::CANCELLED;
             return;
+        }
+
+        // Attach disks
+        for (size_t i = 0; i < config_.diskConfigs.size(); ++i) {
+            const auto& diskConfig = config_.diskConfigs[i];
+            
+            nlohmann::json diskAttachConfig = {
+                {"path", diskConfig.path},
+                {"controller_type", diskConfig.type},
+                {"unit_number", static_cast<int>(i)},
+                {"thin_provisioned", diskConfig.thinProvisioned}
+            };
+
+            if (!vsphereClient_->attachDisk(newVmId, diskAttachConfig, response)) {
+                throw std::runtime_error("Failed to attach disk: " + diskConfig.path);
+            }
+
+            // Update progress based on disk attachment
+            double diskProgress = 0.2 + (0.6 * (i + 1) / config_.diskConfigs.size());
+            updateProgress(diskProgress);
+
+            if (cancelled_) {
+                status_ = RestoreStatus::CANCELLED;
+                return;
+            }
+        }
+
+        // Verify restore
+        if (!vsphereClient_->verifyBackup(backupId_, response)) {
+            throw std::runtime_error("Restore verification failed");
+        }
+
+        updateProgress(0.9);  // 90% complete
+
+        // Power on VM if configured
+        if (config_.powerOnAfterRestore) {
+            if (!vsphereClient_->powerOnVM(newVmId)) {
+                throw std::runtime_error("Failed to power on VM");
+            }
         }
 
         status_ = RestoreStatus::COMPLETED;

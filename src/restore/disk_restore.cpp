@@ -48,9 +48,48 @@ bool DiskRestore::startRestore(const std::string& vmId, const std::string& backu
     isRunning_ = true;
     isPaused_ = false;
 
-    // TODO: Implement actual restore logic using VMwareConnection
+    // Initialize VDDK connection
+    if (!connection_->initializeVDDK()) {
+        Logger::error("Failed to initialize VDDK");
+        return false;
+    }
+
+    // Get VDDK connection handle
+    connectionHandle_ = connection_->getVDDKConnection();
+    if (!connectionHandle_) {
+        Logger::error("Failed to get VDDK connection handle");
+        return false;
+    }
+
+    // Open backup disk
+    if (!openBackupDisk()) {
+        Logger::error("Failed to open backup disk");
+        return false;
+    }
+
+    // Create target disk
+    if (!createTargetDisk()) {
+        Logger::error("Failed to create target disk");
+        closeDisks();
+        return false;
+    }
+
+    // Start full restore
+    if (!restoreFull()) {
+        Logger::error("Failed to perform full restore");
+        closeDisks();
+        return false;
+    }
+
+    // Verify restore
+    if (!verifyRestore()) {
+        Logger::error("Restore verification failed");
+        closeDisks();
+        return false;
+    }
+
     if (progressCallback_) {
-        progressCallback_(0.0);
+        progressCallback_(1.0);
     }
 
     return true;
@@ -64,7 +103,19 @@ bool DiskRestore::stopRestore() {
     isRunning_ = false;
     isPaused_ = false;
 
-    // TODO: Implement cleanup logic
+    // Close all disk handles
+    closeDisks();
+
+    // Cleanup VDDK connection
+    connection_->disconnectFromDisk();
+    connection_->cleanupVDDK();
+
+    // Clear state
+    vmId_.clear();
+    backupPath_.clear();
+    targetPath_.clear();
+    initialized_ = false;
+
     if (progressCallback_) {
         progressCallback_(1.0);
     }
@@ -100,7 +151,52 @@ bool DiskRestore::verifyRestore() {
         return false;
     }
 
-    // TODO: Implement restore verification
+    // Get disk info for both backup and target
+    VixDiskLibInfo* backupInfo = nullptr;
+    VixDiskLibInfo* targetInfo = nullptr;
+
+    if (!getDiskInfo(backupInfo)) {
+        Logger::error("Failed to get backup disk info");
+        return false;
+    }
+
+    // Open target disk to verify
+    VixError vixError = VixDiskLib_Open(
+        connectionHandle_,
+        targetPath_.c_str(),
+        VIXDISKLIB_FLAG_OPEN_UNBUFFERED,
+        &targetHandle_
+    );
+
+    if (VIX_FAILED(vixError)) {
+        logError("Failed to open target disk for verification", vixError);
+        VixDiskLib_FreeInfo(backupInfo);
+        return false;
+    }
+
+    vixError = VixDiskLib_GetInfo(targetHandle_, &targetInfo);
+    if (VIX_FAILED(vixError)) {
+        logError("Failed to get target disk info", vixError);
+        VixDiskLib_FreeInfo(backupInfo);
+        VixDiskLib_Close(targetHandle_);
+        return false;
+    }
+
+    // Compare disk sizes
+    bool sizeMatch = (backupInfo->capacity == targetInfo->capacity);
+    VixDiskLib_FreeInfo(backupInfo);
+    VixDiskLib_FreeInfo(targetInfo);
+    VixDiskLib_Close(targetHandle_);
+
+    if (!sizeMatch) {
+        Logger::error("Disk size mismatch during verification");
+        return false;
+    }
+
+    // TODO: Add checksum verification if needed
+    // This would involve reading both disks and comparing checksums
+    // For now, we're just verifying the disk sizes match
+
     return true;
 }
 
