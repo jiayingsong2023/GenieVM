@@ -101,7 +101,26 @@ bool KVMBackupProvider::getVMDiskPaths(const std::string& vmId, std::vector<std:
     }
 
     // Parse XML to find disk paths
-    // TODO: Implement XML parsing to extract disk paths
+    std::string xmlStr(xml);
+    size_t pos = 0;
+    while ((pos = xmlStr.find("<disk", pos)) != std::string::npos) {
+        // Find source element
+        size_t sourcePos = xmlStr.find("<source", pos);
+        if (sourcePos != std::string::npos) {
+            // Find file attribute
+            size_t filePos = xmlStr.find("file='", sourcePos);
+            if (filePos != std::string::npos) {
+                filePos += 6; // Skip "file='"
+                size_t endPos = xmlStr.find("'", filePos);
+                if (endPos != std::string::npos) {
+                    std::string path = xmlStr.substr(filePos, endPos - filePos);
+                    paths.push_back(path);
+                }
+            }
+        }
+        pos += 5; // Skip "<disk"
+    }
+
     free(xml);
     virDomainFree(domain);
 
@@ -161,6 +180,17 @@ bool KVMBackupProvider::startBackup(const std::string& vmId, const BackupConfig&
         return false;
     }
 
+    // Create backup directory if it doesn't exist
+    std::filesystem::create_directories(config.backupPath);
+
+    // Create snapshot for each disk
+    for (const auto& diskPath : diskPaths) {
+        std::string snapshotId = "backup_" + std::to_string(std::time(nullptr));
+        if (!createSnapshot(vmId, snapshotId)) {
+            return false;
+        }
+    }
+
     // Initialize CBT for each disk
     for (const auto& diskPath : diskPaths) {
         if (!initializeCBT(vmId)) {
@@ -168,7 +198,17 @@ bool KVMBackupProvider::startBackup(const std::string& vmId, const BackupConfig&
         }
     }
 
-    // TODO: Implement backup job creation and start
+    // Start backup job
+    std::string backupId = "backup_" + vmId + "_" + std::to_string(std::time(nullptr));
+    backupJobs_[backupId] = std::make_unique<BackupJob>(shared_from_this(), config);
+    
+    if (progressCallback_) {
+        progressCallback_(0.0);
+    }
+    if (statusCallback_) {
+        statusCallback_("Backup started");
+    }
+
     return true;
 }
 
@@ -177,8 +217,22 @@ bool KVMBackupProvider::cancelBackup(const std::string& backupId) {
         lastError_ = "Not connected";
         return false;
     }
-    // TODO: Implement backup cancellation
-    return false;
+
+    auto it = backupJobs_.find(backupId);
+    if (it == backupJobs_.end()) {
+        lastError_ = "Backup job not found";
+        return false;
+    }
+
+    // Stop the backup job
+    it->second->cancel();
+    backupJobs_.erase(it);
+
+    if (statusCallback_) {
+        statusCallback_("Backup cancelled");
+    }
+
+    return true;
 }
 
 bool KVMBackupProvider::pauseBackup(const std::string& backupId) {
@@ -186,7 +240,16 @@ bool KVMBackupProvider::pauseBackup(const std::string& backupId) {
         lastError_ = "Not connected";
         return false;
     }
-    // TODO: Implement backup pause
+
+    auto it = backupJobs_.find(backupId);
+    if (it == backupJobs_.end()) {
+        lastError_ = "Backup job not found";
+        return false;
+    }
+
+    // TODO: Implement pause functionality in BackupJob
+    // For now, just return false as pause is not implemented
+    lastError_ = "Pause functionality not implemented";
     return false;
 }
 
@@ -195,7 +258,16 @@ bool KVMBackupProvider::resumeBackup(const std::string& backupId) {
         lastError_ = "Not connected";
         return false;
     }
-    // TODO: Implement backup resume
+
+    auto it = backupJobs_.find(backupId);
+    if (it == backupJobs_.end()) {
+        lastError_ = "Backup job not found";
+        return false;
+    }
+
+    // TODO: Implement resume functionality in BackupJob
+    // For now, just return false as resume is not implemented
+    lastError_ = "Resume functionality not implemented";
     return false;
 }
 
@@ -204,8 +276,35 @@ bool KVMBackupProvider::getBackupStatus(const std::string& backupId, std::string
         lastError_ = "Not connected";
         return false;
     }
-    // TODO: Implement backup status check
-    return false;
+
+    auto it = backupJobs_.find(backupId);
+    if (it == backupJobs_.end()) {
+        lastError_ = "Backup job not found";
+        return false;
+    }
+
+    // Convert BackupJob::Status enum to string
+    switch (it->second->getStatus()) {
+        case BackupJob::Status::PENDING:
+            status = "pending";
+            break;
+        case BackupJob::Status::RUNNING:
+            status = "running";
+            break;
+        case BackupJob::Status::COMPLETED:
+            status = "completed";
+            break;
+        case BackupJob::Status::FAILED:
+            status = "failed";
+            break;
+        case BackupJob::Status::CANCELLED:
+            status = "cancelled";
+            break;
+        default:
+            status = "unknown";
+    }
+    progress = it->second->getProgress();
+    return true;
 }
 
 bool KVMBackupProvider::startRestore(const std::string& vmId, const std::string& backupId) {
@@ -213,8 +312,29 @@ bool KVMBackupProvider::startRestore(const std::string& vmId, const std::string&
         lastError_ = "Not connected";
         return false;
     }
-    // TODO: Implement restore
-    return false;
+
+    // Get VM disk paths
+    std::vector<std::string> diskPaths;
+    if (!getVMDiskPaths(vmId, diskPaths)) {
+        return false;
+    }
+
+    // Start restore job
+    std::string restoreId = "restore_" + vmId + "_" + std::to_string(std::time(nullptr));
+    RestoreConfig restoreConfig;
+    restoreConfig.vmId = vmId;
+    restoreConfig.backupId = backupId;
+    // You may want to fill in more fields of restoreConfig as needed
+    restoreJobs_[restoreId] = std::make_unique<RestoreJob>(vmId, backupId, restoreConfig);
+    
+    if (progressCallback_) {
+        progressCallback_(0.0);
+    }
+    if (statusCallback_) {
+        statusCallback_("Restore started");
+    }
+
+    return true;
 }
 
 bool KVMBackupProvider::cancelRestore(const std::string& restoreId) {
@@ -222,8 +342,22 @@ bool KVMBackupProvider::cancelRestore(const std::string& restoreId) {
         lastError_ = "Not connected";
         return false;
     }
-    // TODO: Implement restore cancellation
-    return false;
+
+    auto it = restoreJobs_.find(restoreId);
+    if (it == restoreJobs_.end()) {
+        lastError_ = "Restore job not found";
+        return false;
+    }
+
+    // Stop the restore job
+    it->second->stop();
+    restoreJobs_.erase(it);
+
+    if (statusCallback_) {
+        statusCallback_("Restore cancelled");
+    }
+
+    return true;
 }
 
 bool KVMBackupProvider::pauseRestore(const std::string& restoreId) {
@@ -231,8 +365,19 @@ bool KVMBackupProvider::pauseRestore(const std::string& restoreId) {
         lastError_ = "Not connected";
         return false;
     }
-    // TODO: Implement restore pause
-    return false;
+
+    auto it = restoreJobs_.find(restoreId);
+    if (it == restoreJobs_.end()) {
+        lastError_ = "Restore job not found";
+        return false;
+    }
+
+    it->second->pause();
+    if (statusCallback_) {
+        statusCallback_("Restore paused");
+    }
+
+    return true;
 }
 
 bool KVMBackupProvider::resumeRestore(const std::string& restoreId) {
@@ -240,8 +385,19 @@ bool KVMBackupProvider::resumeRestore(const std::string& restoreId) {
         lastError_ = "Not connected";
         return false;
     }
-    // TODO: Implement restore resume
-    return false;
+
+    auto it = restoreJobs_.find(restoreId);
+    if (it == restoreJobs_.end()) {
+        lastError_ = "Restore job not found";
+        return false;
+    }
+
+    it->second->resume();
+    if (statusCallback_) {
+        statusCallback_("Restore resumed");
+    }
+
+    return true;
 }
 
 bool KVMBackupProvider::getRestoreStatus(const std::string& restoreId, std::string& status, double& progress) const {
@@ -249,8 +405,41 @@ bool KVMBackupProvider::getRestoreStatus(const std::string& restoreId, std::stri
         lastError_ = "Not connected";
         return false;
     }
-    // TODO: Implement restore status check
-    return false;
+
+    auto it = restoreJobs_.find(restoreId);
+    if (it == restoreJobs_.end()) {
+        lastError_ = "Restore job not found";
+        return false;
+    }
+
+    // Convert RestoreStatus enum to string
+    switch (it->second->getStatus()) {
+        case RestoreStatus::NOT_FOUND:
+            status = "not_found";
+            break;
+        case RestoreStatus::PENDING:
+            status = "pending";
+            break;
+        case RestoreStatus::RUNNING:
+            status = "running";
+            break;
+        case RestoreStatus::PAUSED:
+            status = "paused";
+            break;
+        case RestoreStatus::COMPLETED:
+            status = "completed";
+            break;
+        case RestoreStatus::FAILED:
+            status = "failed";
+            break;
+        case RestoreStatus::CANCELLED:
+            status = "cancelled";
+            break;
+        default:
+            status = "unknown";
+    }
+    progress = it->second->getProgress();
+    return true;
 }
 
 bool KVMBackupProvider::enableCBT(const std::string& vmId) {

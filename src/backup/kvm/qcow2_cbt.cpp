@@ -1,6 +1,8 @@
 #include "qcow2_cbt.hpp"
+#include "common/logger.hpp"
 #include <stdexcept>
 #include <system_error>
+#include <cstdio>
 
 QCOW2CBT::QCOW2CBT(const std::string& diskPath)
     : diskPath_(diskPath), isEnabled_(false) {
@@ -18,12 +20,17 @@ bool QCOW2CBT::enableCBT() {
     }
 
     try {
-        // TODO: Implement QEMU dirty bitmap creation
-        // This will require QEMU API integration
+        // Create QEMU dirty bitmap
+        std::string cmd = "qemu-img bitmap add " + diskPath_ + " cbt_bitmap";
+        int result = system(cmd.c_str());
+        if (result != 0) {
+            Logger::error("Failed to create QEMU dirty bitmap");
+            return false;
+        }
         isEnabled_ = true;
         return true;
     } catch (const std::exception& e) {
-        // Log error
+        Logger::error("Exception in enableCBT: " + std::string(e.what()));
         return false;
     }
 }
@@ -34,11 +41,17 @@ bool QCOW2CBT::disableCBT() {
     }
 
     try {
-        // TODO: Implement QEMU dirty bitmap removal
+        // Remove QEMU dirty bitmap
+        std::string cmd = "qemu-img bitmap remove " + diskPath_ + " cbt_bitmap";
+        int result = system(cmd.c_str());
+        if (result != 0) {
+            Logger::error("Failed to remove QEMU dirty bitmap");
+            return false;
+        }
         isEnabled_ = false;
         return true;
     } catch (const std::exception& e) {
-        // Log error
+        Logger::error("Exception in disableCBT: " + std::string(e.what()));
         return false;
     }
 }
@@ -49,11 +62,28 @@ std::vector<BlockRange> QCOW2CBT::getChangedBlocks() {
     }
 
     try {
-        // TODO: Implement QEMU dirty bitmap query
-        // This will return the list of changed blocks
-        return {};
+        // Query QEMU dirty bitmap
+        std::string cmd = "qemu-img bitmap query " + diskPath_ + " cbt_bitmap";
+        FILE* pipe = popen(cmd.c_str(), "r");
+        if (!pipe) {
+            Logger::error("Failed to query QEMU dirty bitmap");
+            return {};
+        }
+
+        std::vector<BlockRange> blocks;
+        char buffer[256];
+        while (fgets(buffer, sizeof(buffer), pipe)) {
+            // Parse bitmap output to get changed blocks
+            // Format: offset size
+            uint64_t offset, size;
+            if (sscanf(buffer, "%lu %lu", &offset, &size) == 2) {
+                blocks.push_back({offset, size});
+            }
+        }
+        pclose(pipe);
+        return blocks;
     } catch (const std::exception& e) {
-        // Log error
+        Logger::error("Exception in getChangedBlocks: " + std::string(e.what()));
         return {};
     }
 }
@@ -64,10 +94,16 @@ bool QCOW2CBT::resetCBT() {
     }
 
     try {
-        // TODO: Implement QEMU dirty bitmap reset
+        // Reset QEMU dirty bitmap
+        std::string cmd = "qemu-img bitmap clear " + diskPath_ + " cbt_bitmap";
+        int result = system(cmd.c_str());
+        if (result != 0) {
+            Logger::error("Failed to reset QEMU dirty bitmap");
+            return false;
+        }
         return true;
     } catch (const std::exception& e) {
-        // Log error
+        Logger::error("Exception in resetCBT: " + std::string(e.what()));
         return false;
     }
 } 

@@ -2,12 +2,15 @@
 
 #include "backup/backup_provider.hpp"
 #include "backup/kvm/cbt_factory.hpp"
+#include "backup/backup_job.hpp"
+#include "backup/restore_job.hpp"
 #include <memory>
 #include <libvirt/libvirt.h>
 #include <string>
 #include <vector>
+#include <map>
 
-class KVMBackupProvider : public BackupProvider {
+class KVMBackupProvider : public BackupProvider, public std::enable_shared_from_this<KVMBackupProvider> {
 public:
     KVMBackupProvider();
     ~KVMBackupProvider() override;
@@ -67,4 +70,8 @@ private:
     bool initializeCBT(const std::string& vmId);
     bool cleanupCBT(const std::string& vmId);
     std::string getDiskFormat(const std::string& diskPath) const;
+
+    // Backup and restore job management
+    std::map<std::string, std::unique_ptr<BackupJob>> backupJobs_;
+    std::map<std::string, std::unique_ptr<RestoreJob>> restoreJobs_;
 }; 
