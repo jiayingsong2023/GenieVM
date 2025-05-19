@@ -1809,4 +1809,408 @@ private:
         return true;
     }
 };
+```
+
+## VDDK Transport Mode Implementation Details
+
+### 1. Transport Mode Initialization
+
+```cpp
+class VDDKTransportInitializer {
+public:
+    struct TransportOptions {
+        bool useSSL;
+        int port;
+        std::string thumbPrint;
+        size_t bufferSize;
+        int timeout;
+    };
+    
+    bool initializeNBD(const TransportOptions& options) {
+        VixDiskLibInitParams initParams = {0};
+        initParams.vmxSpec = nullptr;
+        initParams.transportModes = VIXDISKLIB_TRANSPORT_NBD;
+        
+        // Configure SSL if enabled
+        if (options.useSSL) {
+            initParams.sslThumbPrint = options.thumbPrint.c_str();
+            initParams.port = options.port;
+        }
+        
+        // Set buffer size and timeout
+        initParams.bufferSize = options.bufferSize;
+        initParams.timeout = options.timeout;
+        
+        VixError error = VixDiskLib_InitEx(
+            VIXDISKLIB_VERSION_MAJOR,
+            VIXDISKLIB_VERSION_MINOR,
+            &initParams,
+            logFunc,
+            this
+        );
+        
+        return !VIX_FAILED(error);
+    }
+    
+    bool initializeHotAdd(const std::string& proxyVmName,
+                         const TransportOptions& options) {
+        VixDiskLibInitParams initParams = {0};
+        initParams.vmxSpec = proxyVmName.c_str();
+        initParams.transportModes = VIXDISKLIB_TRANSPORT_HOTADD;
+        
+        // HotAdd specific configurations
+        initParams.bufferSize = options.bufferSize;
+        initParams.timeout = options.timeout;
+        
+        VixError error = VixDiskLib_InitEx(
+            VIXDISKLIB_VERSION_MAJOR,
+            VIXDISKLIB_VERSION_MINOR,
+            &initParams,
+            logFunc,
+            this
+        );
+        
+        return !VIX_FAILED(error);
+    }
+    
+    bool initializeSAN(const std::string& sanConfig,
+                      const TransportOptions& options) {
+        VixDiskLibInitParams initParams = {0};
+        initParams.vmxSpec = nullptr;
+        initParams.transportModes = VIXDISKLIB_TRANSPORT_SAN;
+        initParams.sanConfig = sanConfig.c_str();
+        
+        // SAN specific configurations
+        initParams.bufferSize = options.bufferSize;
+        initParams.timeout = options.timeout;
+        
+        VixError error = VixDiskLib_InitEx(
+            VIXDISKLIB_VERSION_MAJOR,
+            VIXDISKLIB_VERSION_MINOR,
+            &initParams,
+            logFunc,
+            this
+        );
+        
+        return !VIX_FAILED(error);
+    }
+};
+```
+
+### 2. Connection Management
+
+```cpp
+class VDDKConnectionManager {
+public:
+    struct ConnectionConfig {
+        std::string host;
+        std::string username;
+        std::string password;
+        bool useSSL;
+        int port;
+        std::string thumbPrint;
+    };
+    
+    bool connectNBD(const ConnectionConfig& config) {
+        VixDiskLibConnectParams connectParams = {0};
+        connectParams.vmxSpec = config.host.c_str();
+        connectParams.serverName = config.host.c_str();
+        connectParams.credType = VIXDISKLIB_CRED_UID;
+        connectParams.creds.uid.userName = config.username.c_str();
+        connectParams.creds.uid.password = config.password.c_str();
+        
+        if (config.useSSL) {
+            connectParams.port = config.port;
+            connectParams.thumbPrint = config.thumbPrint.c_str();
+        }
+        
+        VixError error = VixDiskLib_ConnectEx(
+            &connectParams,
+            &connection_
+        );
+        
+        return !VIX_FAILED(error);
+    }
+    
+    bool connectHotAdd(const std::string& proxyVmName,
+                      const ConnectionConfig& config) {
+        // HotAdd requires proxy VM connection
+        VixHandle hostHandle = nullptr;
+        VixError error = VixHost_Connect(
+            VIX_API_VERSION,
+            VIX_SERVICEPROVIDER_VMWARE_SERVER,
+            config.host.c_str(),
+            config.port,
+            config.username.c_str(),
+            config.password.c_str(),
+            0,
+            VIX_INVALID_HANDLE,
+            &hostHandle,
+            nullptr
+        );
+        
+        if (VIX_FAILED(error)) {
+            return false;
+        }
+        
+        // Open the proxy VM
+        error = VixHost_OpenVM(
+            hostHandle,
+            proxyVmName.c_str(),
+            VIX_VMOPEN_NORMAL,
+            VIX_INVALID_HANDLE,
+            &vmHandle_,
+            nullptr
+        );
+        
+        Vix_ReleaseHandle(hostHandle);
+        return !VIX_FAILED(error);
+    }
+    
+    bool connectSAN(const std::string& sanConfig,
+                   const ConnectionConfig& config) {
+        // SAN connection requires specific storage configuration
+        VixDiskLibConnectParams connectParams = {0};
+        connectParams.vmxSpec = nullptr;
+        connectParams.serverName = config.host.c_str();
+        connectParams.sanConfig = sanConfig.c_str();
+        
+        VixError error = VixDiskLib_ConnectEx(
+            &connectParams,
+            &connection_
+        );
+        
+        return !VIX_FAILED(error);
+    }
+    
+    void disconnect() {
+        if (connection_) {
+            VixDiskLib_Disconnect(connection_);
+            connection_ = nullptr;
+        }
+        if (vmHandle_) {
+            Vix_ReleaseHandle(vmHandle_);
+            vmHandle_ = nullptr;
+        }
+    }
+
+private:
+    VixDiskLibConnection connection_;
+    VixHandle vmHandle_;
+};
+```
+
+### 3. Transport Mode Selection and Validation
+
+```cpp
+class TransportModeValidator {
+public:
+    struct EnvironmentInfo {
+        bool isProxyVM;
+        bool sameVCenter;
+        bool hasSanAccess;
+        std::string proxyVmName;
+        std::string sanConfig;
+        int networkBandwidth;
+        int storageBandwidth;
+    };
+    
+    static TransportMode selectOptimalMode(const EnvironmentInfo& env) {
+        // Check environment capabilities
+        if (env.isProxyVM && env.sameVCenter) {
+            // HotAdd is optimal for same vCenter operations
+            return TransportMode::HOTADD;
+        }
+        
+        if (env.hasSanAccess && env.storageBandwidth > env.networkBandwidth) {
+            // SAN is optimal for high-speed storage access
+            return TransportMode::SAN;
+        }
+        
+        // NBD is the default fallback
+        return TransportMode::NBD;
+    }
+    
+    static bool validateMode(const TransportMode& mode,
+                           const EnvironmentInfo& env) {
+        switch (mode) {
+            case TransportMode::HOTADD:
+                return validateHotAdd(env);
+            case TransportMode::SAN:
+                return validateSAN(env);
+            case TransportMode::NBD:
+                return validateNBD(env);
+            default:
+                return false;
+        }
+    }
+    
+private:
+    static bool validateHotAdd(const EnvironmentInfo& env) {
+        return env.isProxyVM && 
+               env.sameVCenter && 
+               !env.proxyVmName.empty();
+    }
+    
+    static bool validateSAN(const EnvironmentInfo& env) {
+        return env.hasSanAccess && 
+               !env.sanConfig.empty() && 
+               env.storageBandwidth > 0;
+    }
+    
+    static bool validateNBD(const EnvironmentInfo& env) {
+        return env.networkBandwidth > 0;
+    }
+};
+```
+
+### 4. Performance Optimization
+
+```cpp
+class TransportOptimizer {
+public:
+    struct OptimizationConfig {
+        size_t bufferSize;
+        int numThreads;
+        bool useCompression;
+        int compressionLevel;
+        bool useSSL;
+    };
+    
+    static OptimizationConfig getOptimalConfig(
+        const TransportMode& mode,
+        const EnvironmentInfo& env) {
+        OptimizationConfig config;
+        
+        switch (mode) {
+            case TransportMode::HOTADD:
+                // HotAdd can use larger buffers due to direct access
+                config.bufferSize = 4 * 1024 * 1024;  // 4MB
+                config.numThreads = std::thread::hardware_concurrency();
+                config.useCompression = false;  // No need for compression
+                break;
+                
+            case TransportMode::SAN:
+                // SAN can also use larger buffers
+                config.bufferSize = 4 * 1024 * 1024;  // 4MB
+                config.numThreads = std::thread::hardware_concurrency();
+                config.useCompression = false;
+                break;
+                
+            case TransportMode::NBD:
+                // NBD needs smaller buffers and compression
+                config.bufferSize = 1 * 1024 * 1024;  // 1MB
+                config.numThreads = std::min(
+                    std::thread::hardware_concurrency(),
+                    static_cast<unsigned int>(4)
+                );
+                config.useCompression = true;
+                config.compressionLevel = 6;  // Balanced compression
+                break;
+        }
+        
+        // SSL is always enabled for security
+        config.useSSL = true;
+        
+        return config;
+    }
+};
+```
+
+### 5. Error Handling and Recovery
+
+```cpp
+class TransportErrorHandler {
+public:
+    struct ErrorConfig {
+        int maxRetries;
+        int retryDelay;
+        bool useExponentialBackoff;
+        std::vector<VixError> retryableErrors;
+    };
+    
+    bool handleTransportError(VixError error,
+                            const TransportMode& mode,
+                            const ErrorConfig& config) {
+        // Check if error is retryable
+        if (std::find(config.retryableErrors.begin(),
+                     config.retryableErrors.end(),
+                     error) == config.retryableErrors.end()) {
+            return false;
+        }
+        
+        // Handle mode-specific errors
+        switch (mode) {
+            case TransportMode::NBD:
+                return handleNBDError(error, config);
+            case TransportMode::HOTADD:
+                return handleHotAddError(error, config);
+            case TransportMode::SAN:
+                return handleSANError(error, config);
+            default:
+                return false;
+        }
+    }
+    
+private:
+    bool handleNBDError(VixError error, const ErrorConfig& config) {
+        // NBD specific error handling
+        switch (error) {
+            case VIX_E_NETWORK_ERROR:
+            case VIX_E_TIMEOUT:
+                return retryWithBackoff(config);
+            default:
+                return false;
+        }
+    }
+    
+    bool handleHotAddError(VixError error, const ErrorConfig& config) {
+        // HotAdd specific error handling
+        switch (error) {
+            case VIX_E_VM_NOT_FOUND:
+            case VIX_E_VM_ALREADY_OPEN:
+                return retryWithBackoff(config);
+            default:
+                return false;
+        }
+    }
+    
+    bool handleSANError(VixError error, const ErrorConfig& config) {
+        // SAN specific error handling
+        switch (error) {
+            case VIX_E_SAN_ERROR:
+            case VIX_E_SAN_ACCESS_DENIED:
+                return retryWithBackoff(config);
+            default:
+                return false;
+        }
+    }
+    
+    bool retryWithBackoff(const ErrorConfig& config) {
+        int retryCount = 0;
+        int delay = config.retryDelay;
+        
+        while (retryCount < config.maxRetries) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(delay)
+            );
+            
+            if (retryOperation()) {
+                return true;
+            }
+            
+            retryCount++;
+            if (config.useExponentialBackoff) {
+                delay *= 2;
+            }
+        }
+        
+        return false;
+    }
+    
+    bool retryOperation() {
+        // Implementation for operation retry
+        return true;
+    }
+};
 ``` 
