@@ -2,8 +2,8 @@
 #include "backup/kvm/qcow2_cbt.hpp"
 #include "backup/kvm/lvm_cbt.hpp"
 #include "backup/vmware/vmware_backup_provider.hpp"
-#include "backup/vmware/vmware_connection.hpp"
 #include "common/logger.hpp"
+#include "common/vmware_connection.hpp"
 #include <stdexcept>
 #include <fstream>
 #include <sys/stat.h>

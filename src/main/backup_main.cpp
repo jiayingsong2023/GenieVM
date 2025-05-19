@@ -1,5 +1,5 @@
 #include "backup/backup_cli.hpp"
-#include "backup/vmware/vmware_connection.hpp"
+#include "common/vmware_connection.hpp"
 #include "common/logger.hpp"
 #include "common/thread_utils.hpp"
 #include <iostream>

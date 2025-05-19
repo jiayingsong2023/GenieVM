@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "backup/backup_provider.hpp"
 #include "backup/vmware/vmware_backup_provider.hpp"
-#include "backup/vmware/vmware_connection.hpp"
+#include "common/vmware_connection.hpp"
 #include "backup/kvm/kvm_backup_provider.hpp"
 #include <memory>
 

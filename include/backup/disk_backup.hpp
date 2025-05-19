@@ -1,7 +1,7 @@
 #pragma once
 
 #include "backup/vm_config.hpp"
-#include "backup/vmware/vmware_connection.hpp"
+#include "common/vmware_connection.hpp"
 #include <string>
 #include <vector>
 #include <memory>

@@ -5,7 +5,7 @@
 #include <vector>
 #include "backup/backup_provider.hpp"
 #include "backup/kvm/cbt.hpp"
-#include "backup/vmware/vmware_connection.hpp"
+#include "common/vmware_connection.hpp"
 
 class CBTFactory {
 public:

@@ -4,8 +4,8 @@
 #include "backup/backup_verifier.hpp"
 #include "backup/backup_job.hpp"
 #include "backup/vmware/vmware_backup_provider.hpp"
-#include "backup/vmware/vmware_connection.hpp"
 #include "common/logger.hpp"
+#include "common/vmware_connection.hpp"
 #include "main/backup_main.hpp"
 #include <iostream>
 #include <iomanip>

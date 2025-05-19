@@ -5,7 +5,7 @@
 #include "backup/backup_manager.hpp"
 #include "backup/backup_scheduler.hpp"
 #include "backup/backup_verifier.hpp"
-#include "backup/vmware/vmware_connection.hpp"
+#include "common/vmware_connection.hpp"
 #include "common/logger.hpp"
 #include <memory>
 #include <string>
