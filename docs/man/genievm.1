@@ -1,0 +1,92 @@
+.TH GENIEVM 1 "March 2024" "GenieVM 1.0.0" "VM Backup and Restore Tool"
+.SH NAME
+genievm \- VM Backup and Restore Tool for VMware & KVM
+.SH SYNOPSIS
+.B genievm
+[\fIOPTIONS\fR] \fICOMMAND\fR [\fIARGS\fR]
+.SH DESCRIPTION
+GenieVM is a powerful tool for backing up and restoring virtual machines on both VMware (using VDDK) and KVM (using libvirt, qemu, and LVM).
+.SH COMMANDS
+.TP
+.B backup
+Backup a virtual machine
+.TP
+.B restore
+Restore a virtual machine from backup
+.TP
+.B schedule
+Schedule a backup
+.TP
+.B list
+List available backups
+.TP
+.B verify
+Verify a backup
+.SH OPTIONS
+.TP
+.BR \-v ", " \-\-vm\-name " " \fINAME\fR
+Name of the VM to backup/restore
+.TP
+.BR \-b ", " \-\-backup\-dir " " \fIDIR\fR
+Directory for backup
+.TP
+.BR \-s ", " \-\-server " " \fIHOST\fR
+vCenter/ESXi/KVM host
+.TP
+.BR \-u ", " \-\-username " " \fIUSER\fR
+Username for host
+.TP
+.BR \-p ", " \-\-password " " \fIPASS\fR
+Password for host
+.TP
+.BR \-i ", " \-\-incremental
+Use incremental backup (CBT)
+.TP
+.BR \-\-schedule " " \fITIME\fR
+Schedule backup at specific time (YYYY-MM-DD HH:MM:SS)
+.TP
+.BR \-\-interval " " \fISECONDS\fR
+Schedule periodic backup every N seconds
+.TP
+.BR \-\-parallel " " \fINUM\fR
+Number of parallel backup tasks (default: 4)
+.TP
+.BR \-\-compression " " \fILEVEL\fR
+Compression level (0-9, default: 0)
+.TP
+.BR \-\-retention " " \fIDAYS\fR
+Number of days to keep backups (default: 7)
+.TP
+.BR \-\-max\-backups " " \fINUM\fR
+Maximum number of backups to keep (default: 10)
+.TP
+.BR \-\-disable\-cbt
+Disable Changed Block Tracking
+.TP
+.BR \-\-exclude\-disk " " \fIPATH\fR
+Exclude disk from backup (can be used multiple times)
+.SH EXAMPLES
+.TP
+Backup a VM:
+.B genievm backup -v myvm -b /backup/dir -s vcenter.example.com -u admin -p password
+.TP
+Restore a VM:
+.B genievm restore -v myvm -b /backup/dir -d datastore1 -r pool1 -s vcenter.example.com
+.TP
+Schedule a backup:
+.B genievm schedule -v myvm --schedule "2024-03-20 02:00:00" --interval 86400
+.SH FILES
+.TP
+.I /usr/local/vddk
+VMware VDDK installation directory
+.TP
+.I /etc/genievm
+Configuration directory
+.SH SEE ALSO
+.BR virsh (1),
+.BR qemu-img (1),
+.BR lvm (8)
+.SH AUTHOR
+GenieVM Team <team@genievm.org>
+.SH BUGS
+Report bugs to <bugs@genievm.org> 

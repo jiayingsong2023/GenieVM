@@ -1,0 +1,41 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE = 1
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DVDDK_ROOT=/usr/local/vddk \
+		-DVDDK_INCLUDE_DIR=/usr/local/vddk/include \
+		-DVDDK_LIBRARY_DIR=/usr/local/vddk/lib64
+
+override_dh_auto_build:
+	dh_auto_build
+
+override_dh_auto_install:
+	dh_auto_install
+	# Create symlinks to system VDDK files
+	mkdir -p debian/genievm/usr/lib
+	ln -sf /usr/local/vddk/lib64/libvixDiskLib.so debian/genievm/usr/lib/
+	mkdir -p debian/genievm/usr/include
+	ln -sf /usr/local/vddk/include/vixDiskLib.h debian/genievm/usr/include/
+	ln -sf /usr/local/vddk/include/vixDiskLibPlugin.h debian/genievm/usr/include/
+	ln -sf /usr/local/vddk/include/vixMntapi.h debian/genievm/usr/include/
+	ln -sf /usr/local/vddk/include/vm_basic_types.h debian/genievm/usr/include/
+	# Install man pages if they exist
+	if [ -f docs/man/genievm.1 ]; then \
+		mkdir -p debian/genievm/usr/share/man/man1; \
+		cp docs/man/genievm.1 debian/genievm/usr/share/man/man1/; \
+	fi
+
+override_dh_shlibdeps:
+	dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info
+
+override_dh_auto_test:
+	# Run tests if they exist
+	dh_auto_test || true 

@@ -151,11 +151,3 @@ set_target_properties(genievm PROPERTIES
 # Install
 install(TARGETS genievm DESTINATION bin)
 
-# Install VMware SDK libraries
-install(FILES ${VDDK_LIBRARY} DESTINATION lib)
-
-# Install VMware SDK include files
-install(DIRECTORY ${VDDK_INCLUDE_DIR}/ DESTINATION include)
-
-# Install VMware SDK include files
-install(FILES ${CMAKE_SOURCE_DIR}/third_party/vmware-sdk/include/vixDiskLib.h DESTINATION include)

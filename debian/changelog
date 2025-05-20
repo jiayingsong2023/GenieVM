@@ -1,0 +1,9 @@
+genievm (1.0.0-1) jammy; urgency=medium
+
+  * Initial release
+  * Support for VMware and KVM backup/restore
+  * Includes VDDK for VMware support
+  * Support for QCOW2 and LVM disk types
+  * Incremental backup with CBT support
+
+ -- GenieVM Team <team@genievm.org>  Wed, 20 Mar 2024 10:00:00 +0000 
