@@ -32,6 +32,9 @@ public:
     void disconnect();
     bool isConnected() const;
 
+    // Error handling
+    std::string getLastError() const;
+
     // VM management
     std::vector<std::string> listVMs() const;
     bool getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) const;
@@ -69,7 +72,6 @@ public:
     void setStatusCallback(StatusCallback callback);
 
     // Error handling
-    std::string getLastError() const;
     void clearLastError();
 
 private:

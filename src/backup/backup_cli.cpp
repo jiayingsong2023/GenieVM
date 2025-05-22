@@ -43,12 +43,26 @@ BackupCLI::~BackupCLI() {
 }
 
 void BackupCLI::run(int argc, char* argv[]) {
+    Logger::debug("Running BackupCLI with " + std::to_string(argc) + " arguments");
+    for (int i = 0; i < argc; i++) {
+        Logger::debug("Argument " + std::to_string(i) + ": " + argv[i]);
+    }
+
     if (argc < 2) {
         printUsage();
         return;
     }
 
-    std::string command = argv[1];
+    // The first argument should be the command
+    std::string command = argv[0];
+    Logger::debug("Command: " + command);
+
+    // Shift arguments to the left by one position
+    for (int i = 0; i < argc - 1; i++) {
+        argv[i] = argv[i + 1];
+    }
+    argc--;
+
     if (command == "backup") {
         handleBackupCommand(argc, argv);
     } else if (command == "schedule") {
@@ -68,71 +82,50 @@ void BackupCLI::printUsage() const {
 }
 
 void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
-    if (argc < 2 || (argc == 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help"))) {
-        printBackupUsage();
-        return;
+    Logger::debug("Handling backup command with " + std::to_string(argc) + " arguments");
+    for (int i = 0; i < argc; i++) {
+        Logger::debug("Argument " + std::to_string(i) + ": " + argv[i]);
     }
 
     BackupConfig config;
     std::string host, username, password;
 
     // Parse command line arguments
-    for (int i = 1; i < argc; i++) {
+    for (int i = 0; i < argc; i++) {
         std::string arg = argv[i];
+        Logger::debug("Processing argument: " + arg);
+        
         if (arg == "-h" || arg == "--help") {
             printBackupUsage();
             return;
         } else if (arg == "-v" || arg == "--vm-name") {
-            if (i + 1 < argc) config.vmId = argv[++i];
+            if (i + 1 < argc) {
+                config.vmId = argv[++i];
+                Logger::debug("VM name set to: " + config.vmId);
+            }
         } else if (arg == "-b" || arg == "--backup-dir") {
-            if (i + 1 < argc) config.backupDir = argv[++i];
+            if (i + 1 < argc) {
+                config.backupDir = argv[++i];
+                Logger::debug("Backup directory set to: " + config.backupDir);
+            }
         } else if (arg == "-s" || arg == "--server") {
-            if (i + 1 < argc) host = argv[++i];
+            if (i + 1 < argc) {
+                host = argv[++i];
+                Logger::debug("Server set to: " + host);
+            }
         } else if (arg == "-u" || arg == "--username") {
-            if (i + 1 < argc) username = argv[++i];
+            if (i + 1 < argc) {
+                username = argv[++i];
+                Logger::debug("Username set to: " + username);
+            }
         } else if (arg == "-p" || arg == "--password") {
             if (i + 1 < argc) {
-                // Get the raw password from command line
                 password = argv[++i];
-                
-                // Log initial password details
-                Logger::debug("Initial password length: " + std::to_string(password.length()));
-                if (!password.empty()) {
-                    Logger::debug("Password first char: " + std::string(1, password[0]));
-                    Logger::debug("Password last char: " + std::string(1, password[password.length() - 1]));
-                }
-
-                // Handle escaped special characters in password
-                std::string processedPassword;
-                for (size_t i = 0; i < password.length(); i++) {
-                    if (password[i] == '\\' && i + 1 < password.length()) {
-                        // Skip the backslash and include the next character as is
-                        processedPassword += password[i + 1];
-                        i++; // Skip the next character since we've already processed it
-                    } else if (password[i] == '%' && i + 1 < password.length() && password[i + 1] == '%') {
-                        // Handle double percent
-                        processedPassword += '%';
-                        i++; // Skip the next percent
-                    } else {
-                        processedPassword += password[i];
-                    }
-                }
-                password = processedPassword;
-
-                // Remove any terminal-related characters
-                password.erase(std::remove(password.begin(), password.end(), '\n'), password.end());
-                password.erase(std::remove(password.begin(), password.end(), '\r'), password.end());
-                password.erase(std::remove(password.begin(), password.end(), '\0'), password.end());
-
-                // Log final password details
-                Logger::debug("Final password length after processing: " + std::to_string(password.length()));
-                if (!password.empty()) {
-                    Logger::debug("Final password first char: " + std::string(1, password[0]));
-                    Logger::debug("Final password last char: " + std::string(1, password[password.length() - 1]));
-                }
+                Logger::debug("Password received, length: " + std::to_string(password.length()));
             }
         } else if (arg == "-i" || arg == "--incremental") {
             config.incremental = true;
+            Logger::debug("Incremental backup enabled");
         } else if (arg == "--schedule") {
             if (i + 1 < argc) {
                 std::string timeStr = argv[++i];
@@ -163,23 +156,34 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
     }
 
     // Validate required parameters
-    if (config.vmId.empty() || config.backupDir.empty() || 
-        host.empty() || username.empty() || password.empty()) {
-        std::cerr << "Error: Missing required parameters\n";
+    if (config.vmId.empty() || config.backupDir.empty() || host.empty() || username.empty() || password.empty()) {
+        Logger::error("Missing required parameters");
+        Logger::error(std::string("VM name: ") + (config.vmId.empty() ? "missing" : "set"));
+        Logger::error(std::string("Backup dir: ") + (config.backupDir.empty() ? "missing" : "set"));
+        Logger::error(std::string("Server: ") + (host.empty() ? "missing" : "set"));
+        Logger::error(std::string("Username: ") + (username.empty() ? "missing" : "set"));
+        Logger::error(std::string("Password: ") + (password.empty() ? "missing" : "set"));
         printBackupUsage();
         return;
     }
 
-    // Connect to vCenter/ESXi
+    Logger::debug("All required parameters are present, proceeding with backup");
+    
+    // Connect to vCenter
     if (!connection_->connect(host, username, password)) {
-        std::cerr << "Failed to connect to vCenter/ESXi\n";
+        Logger::error("Failed to connect to vCenter: " + connection_->getLastError());
         return;
     }
 
-    // Create and run backup job
-    auto provider = std::make_shared<VMwareBackupProvider>(connection_);
-    auto job = std::make_shared<BackupJob>(provider, config);
-    job->start();
+    Logger::debug("Successfully connected to vCenter, starting backup");
+    
+    // Start backup
+    if (!manager_->startBackup(config.vmId, config)) {
+        Logger::error("Failed to start backup: " + manager_->getLastError());
+        return;
+    }
+
+    Logger::debug("Backup started successfully");
 }
 
 void BackupCLI::handleScheduleCommand(int argc, char* argv[]) {

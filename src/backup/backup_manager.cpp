@@ -86,3 +86,11 @@ bool BackupManager::getChangedBlocks(const std::string& vmId, const std::string&
 
     return provider_->getChangedBlocks(vmId, diskPath, changedBlocks);
 }
+
+std::string BackupManager::getLastError() const {
+    return lastError_;
+}
+
+void BackupManager::clearLastError() {
+    lastError_.clear();
+}
