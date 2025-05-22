@@ -220,7 +220,7 @@ VSphereRestClient::VSphereRestClient(const std::string& host, const std::string&
 
 VSphereRestClient::~VSphereRestClient() {
     Logger::debug("Cleaning up VSphereRestClient");
-    if (isLoggedIn_) {
+    if (isLoggedIn_ && !sessionId_.empty()) {
         Logger::debug("Logging out before cleanup");
         logout();
     }

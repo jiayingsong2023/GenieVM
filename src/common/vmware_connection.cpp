@@ -52,7 +52,7 @@ bool VMwareConnection::connect(const std::string& host, const std::string& usern
 }
 
 void VMwareConnection::disconnect() {
-    if (connected_) {
+    if (connected_ && restClient_) {
         restClient_->logout();
         connected_ = false;
     }

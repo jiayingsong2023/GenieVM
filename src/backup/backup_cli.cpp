@@ -43,11 +43,6 @@ BackupCLI::~BackupCLI() {
 }
 
 void BackupCLI::run(int argc, char* argv[]) {
-    Logger::debug("Running BackupCLI with " + std::to_string(argc) + " arguments");
-    for (int i = 0; i < argc; i++) {
-        Logger::debug("Argument " + std::to_string(i) + ": " + argv[i]);
-    }
-
     if (argc < 2) {
         printUsage();
         return;
@@ -55,7 +50,6 @@ void BackupCLI::run(int argc, char* argv[]) {
 
     // The first argument should be the command
     std::string command = argv[0];
-    Logger::debug("Command: " + command);
 
     // Shift arguments to the left by one position
     for (int i = 0; i < argc - 1; i++) {
@@ -82,18 +76,12 @@ void BackupCLI::printUsage() const {
 }
 
 void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
-    Logger::debug("Handling backup command with " + std::to_string(argc) + " arguments");
-    for (int i = 0; i < argc; i++) {
-        Logger::debug("Argument " + std::to_string(i) + ": " + argv[i]);
-    }
-
     BackupConfig config;
     std::string host, username, password;
 
     // Parse command line arguments
     for (int i = 0; i < argc; i++) {
         std::string arg = argv[i];
-        Logger::debug("Processing argument: " + arg);
         
         if (arg == "-h" || arg == "--help") {
             printBackupUsage();
@@ -101,31 +89,25 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
         } else if (arg == "-v" || arg == "--vm-name") {
             if (i + 1 < argc) {
                 config.vmId = argv[++i];
-                Logger::debug("VM name set to: " + config.vmId);
             }
         } else if (arg == "-b" || arg == "--backup-dir") {
             if (i + 1 < argc) {
                 config.backupDir = argv[++i];
-                Logger::debug("Backup directory set to: " + config.backupDir);
             }
         } else if (arg == "-s" || arg == "--server") {
             if (i + 1 < argc) {
                 host = argv[++i];
-                Logger::debug("Server set to: " + host);
             }
         } else if (arg == "-u" || arg == "--username") {
             if (i + 1 < argc) {
                 username = argv[++i];
-                Logger::debug("Username set to: " + username);
             }
         } else if (arg == "-p" || arg == "--password") {
             if (i + 1 < argc) {
                 password = argv[++i];
-                Logger::debug("Password received, length: " + std::to_string(password.length()));
             }
         } else if (arg == "-i" || arg == "--incremental") {
             config.incremental = true;
-            Logger::debug("Incremental backup enabled");
         } else if (arg == "--schedule") {
             if (i + 1 < argc) {
                 std::string timeStr = argv[++i];
@@ -167,7 +149,7 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
         return;
     }
 
-    Logger::debug("All required parameters are present, proceeding with backup");
+    Logger::info("Starting backup process");
     
     // Connect to vCenter
     if (!connection_->connect(host, username, password)) {
@@ -175,7 +157,7 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
         return;
     }
 
-    Logger::debug("Successfully connected to vCenter, starting backup");
+    Logger::info("Successfully connected to vCenter");
     
     // Start backup
     if (!manager_->startBackup(config.vmId, config)) {
@@ -183,7 +165,7 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
         return;
     }
 
-    Logger::debug("Backup started successfully");
+    Logger::info("Backup started successfully");
 }
 
 void BackupCLI::handleScheduleCommand(int argc, char* argv[]) {
