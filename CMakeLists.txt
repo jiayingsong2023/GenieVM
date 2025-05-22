@@ -27,6 +27,15 @@ if(NOT nlohmann_json_FOUND)
     message(FATAL_ERROR "nlohmann/json not found. Please install nlohmann-json3-dev package.")
 endif()
 
+# Add CLI11
+include(FetchContent)
+FetchContent_Declare(
+    CLI11
+    GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
+    GIT_TAG        v2.4.1
+)
+FetchContent_MakeAvailable(CLI11)
+
 # Find libvirt
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBVIRT REQUIRED libvirt)
@@ -125,6 +134,7 @@ target_include_directories(genievm
         ${VDDK_INCLUDE_DIR}
         ${CURL_INCLUDE_DIRS}
         ${LIBVIRT_INCLUDE_DIRS}
+        ${CLI11_INCLUDE_DIRS}
 )
 
 # Link libraries
@@ -138,6 +148,7 @@ target_link_libraries(genievm
     /usr/lib/x86_64-linux-gnu/libcurl.so.4
     ${LIBVIRT_LIBRARIES}
     nlohmann_json::nlohmann_json
+    CLI11::CLI11
 )
 
 # Set RPATH

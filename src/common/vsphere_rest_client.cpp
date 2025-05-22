@@ -5,52 +5,394 @@
 #include <sstream>
 #include <iomanip>
 #include <ctime>
+#include <thread>
+#include <curl/urlapi.h>  // For URL encoding
+#include <regex>
 
-VSphereRestClient::VSphereRestClient(const std::string& host, const std::string& username, const std::string& password)
-    : host_(host), username_(username), password_(password), curl_(nullptr), isLoggedIn_(false) {
-    curl_global_init(CURL_GLOBAL_ALL);
-    curl_ = curl_easy_init();
-    if (!curl_) {
-        throw std::runtime_error("Failed to initialize CURL");
+// Helper function to URL encode a string
+std::string urlEncode(const std::string& str) {
+    char* encoded = curl_easy_escape(nullptr, str.c_str(), str.length());
+    if (!encoded) {
+        Logger::error("Failed to URL encode string");
+        return str;
+    }
+    std::string result(encoded);
+    curl_free(encoded);
+    return result;
+}
+
+// Helper function to parse STS challenge
+STSChallenge parseSTSChallenge(const std::string& challenge) {
+    STSChallenge result;
+    std::regex realmRegex("realm=\"([^\"]+)\"");
+    std::regex serviceRegex("service=\"([^\"]+)\"");
+    std::regex stsRegex("sts=\"([^\"]+)\"");
+    std::regex signRealmRegex("SIGN realm=([^,]+)");
+
+    std::smatch matches;
+    if (std::regex_search(challenge, matches, realmRegex)) {
+        result.realm = matches[1];
+    }
+    if (std::regex_search(challenge, matches, serviceRegex)) {
+        result.service = matches[1];
+    }
+    if (std::regex_search(challenge, matches, stsRegex)) {
+        result.stsUrl = matches[1];
+    }
+    if (std::regex_search(challenge, matches, signRealmRegex)) {
+        result.signRealm = matches[1];
+    }
+
+    return result;
+}
+
+// Local write callback for getSTSToken
+static size_t localWriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
+    size_t realsize = size * nmemb;
+    userp->append((char*)contents, realsize);
+    return realsize;
+}
+
+// Helper function to get STS token
+std::string getSTSToken(const std::string& stsUrl, const std::string& username, const std::string& password) {
+    Logger::debug("Getting STS token from: " + stsUrl);
+    Logger::debug("Username length: " + std::to_string(username.length()));
+    Logger::debug("Password length: " + std::to_string(password.length()));
+    
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        Logger::error("Failed to initialize CURL for STS token request");
+        return "";
+    }
+
+    std::string responseData;
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/x-www-form-urlencoded");
+    headers = curl_slist_append(headers, "Accept: application/json");
+
+    // Build post data with encoded credentials
+    std::string postData = "grant_type=password&username=" + username + 
+                          "&password=" + password;
+
+    Logger::debug("Post data: " + postData);
+    Logger::debug("Post data length: " + std::to_string(postData.length()));
+
+    curl_easy_setopt(curl, CURLOPT_URL, stsUrl.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, postData.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, localWriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseData);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+
+    // Add verbose logging for CURL
+    curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+    FILE* verbose = fopen("/tmp/curl_verbose.log", "a");
+    if (verbose) {
+        fprintf(verbose, "\n=== STS Token Request ===\n");
+        fprintf(verbose, "URL: %s\n", stsUrl.c_str());
+        fprintf(verbose, "Headers:\n");
+        fprintf(verbose, "  Content-Type: application/x-www-form-urlencoded\n");
+        fprintf(verbose, "  Accept: application/json\n");
+        fprintf(verbose, "Post Data: %s\n", postData.c_str());
+        curl_easy_setopt(curl, CURLOPT_STDERR, verbose);
+    }
+
+    CURLcode res = curl_easy_perform(curl);
+    long httpCode = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+
+    if (verbose) {
+        fprintf(verbose, "\nSTS Token Response Code: %ld\n", httpCode);
+        fprintf(verbose, "STS Token Response: %s\n", responseData.c_str());
+        fclose(verbose);
+    }
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        Logger::error("Failed to get STS token: " + std::string(curl_easy_strerror(res)));
+        return "";
+    }
+
+    if (httpCode != 200) {
+        Logger::error("STS token request failed with HTTP code: " + std::to_string(httpCode));
+        Logger::debug("STS response: " + responseData);
+        Logger::debug("STS URL: " + stsUrl);
+        Logger::debug("Request headers:");
+        Logger::debug("  Content-Type: application/x-www-form-urlencoded");
+        Logger::debug("  Accept: application/json");
+        return "";
+    }
+
+    try {
+        nlohmann::json response = nlohmann::json::parse(responseData);
+        if (response.contains("access_token")) {
+            std::string token = response["access_token"].get<std::string>();
+            Logger::debug("Successfully obtained STS token, length: " + std::to_string(token.length()));
+            return token;
+        } else {
+            Logger::error("STS response does not contain access_token");
+            Logger::debug("Full STS response: " + responseData);
+        }
+    } catch (const std::exception& e) {
+        Logger::error("Failed to parse STS token response: " + std::string(e.what()));
+        Logger::debug("Raw STS response: " + responseData);
+    }
+
+    return "";
+}
+
+// Helper function to analyze authentication errors
+void analyzeAuthError(const std::string& responseData, const std::string& username) {
+    Logger::error("Authentication Error Analysis:");
+    
+    // Check for common authentication error patterns
+    if (responseData.find("invalid_grant") != std::string::npos) {
+        Logger::error("Invalid credentials provided");
+        Logger::error("Please verify username and password");
+    }
+    
+    if (responseData.find("invalid_client") != std::string::npos) {
+        Logger::error("Invalid client credentials");
+        Logger::error("Please check if the user account is properly configured in vCenter");
+    }
+    
+    if (responseData.find("unauthorized_client") != std::string::npos) {
+        Logger::error("Client is not authorized to use this authentication method");
+        Logger::error("Please check user permissions in vCenter");
+    }
+    
+    if (responseData.find("invalid_request") != std::string::npos) {
+        Logger::error("Invalid request format");
+        Logger::error("This might be due to special characters in username/password");
+        std::string specialChars = "Username contains special characters: ";
+        specialChars += (username.find('@') != std::string::npos ? "Yes (@)" : "No");
+        specialChars += (username.find('%') != std::string::npos ? " Yes (%)" : "");
+        specialChars += (username.find('$') != std::string::npos ? " Yes ($)" : "");
+        Logger::debug(specialChars);
+    }
+    
+    if (responseData.find("invalid_scope") != std::string::npos) {
+        Logger::error("Invalid scope requested");
+        Logger::error("Please check if the user has the required permissions");
+    }
+    
+    if (responseData.find("server_error") != std::string::npos) {
+        Logger::error("vCenter server authentication error");
+        Logger::error("This might be a temporary issue or server configuration problem");
     }
 }
 
+VSphereRestClient::VSphereRestClient(const std::string& host, const std::string& username, const std::string& password)
+    : host_(host), username_(username), password_(password), curl_(nullptr), isLoggedIn_(false) {
+    Logger::debug("Initializing VSphereRestClient for host: " + host);
+    
+    curl_global_init(CURL_GLOBAL_ALL);
+    curl_ = curl_easy_init();
+    if (!curl_) {
+        Logger::error("Failed to initialize CURL");
+        throw std::runtime_error("Failed to initialize CURL");
+    }
+
+    // TODO: Implement proper SSL certificate verification
+    // Current implementation disables SSL verification as a temporary workaround
+    // for self-signed certificates. This should be replaced with proper certificate
+    // handling in production environments.
+    // Options to consider:
+    // 1. Add vCenter's CA certificate to trusted store
+    // 2. Use a custom CA bundle file
+    // 3. Implement certificate pinning
+    Logger::warning("SSL verification is disabled. This is not recommended for production use.");
+    curl_easy_setopt(curl_, CURLOPT_SSL_VERIFYPEER, 0L);  // Disable SSL certificate verification
+    curl_easy_setopt(curl_, CURLOPT_SSL_VERIFYHOST, 0L);  // Disable hostname verification
+
+    // Set connection timeouts and keep-alive settings
+    curl_easy_setopt(curl_, CURLOPT_CONNECTTIMEOUT, 30L);  // 30 seconds connection timeout
+    curl_easy_setopt(curl_, CURLOPT_TIMEOUT, 300L);        // 5 minutes operation timeout
+    curl_easy_setopt(curl_, CURLOPT_TCP_KEEPALIVE, 1L);    // Enable TCP keep-alive
+    curl_easy_setopt(curl_, CURLOPT_TCP_KEEPIDLE, 60L);    // Keep-alive idle time
+    curl_easy_setopt(curl_, CURLOPT_TCP_KEEPINTVL, 30L);   // Keep-alive interval
+    
+    Logger::debug("CURL options configured: SSL verification disabled (temporary), connection timeout: 30s, operation timeout: 300s");
+}
+
 VSphereRestClient::~VSphereRestClient() {
+    Logger::debug("Cleaning up VSphereRestClient");
     if (isLoggedIn_) {
+        Logger::debug("Logging out before cleanup");
         logout();
     }
     if (curl_) {
         curl_easy_cleanup(curl_);
+        Logger::debug("CURL handle cleaned up");
     }
     curl_global_cleanup();
+    Logger::debug("VSphereRestClient cleanup completed");
 }
 
 bool VSphereRestClient::login() {
-    nlohmann::json loginData = {
-        {"username", username_},
-        {"password", password_}
-    };
+    // Immediate debug output
+    fprintf(stderr, "Starting login process...\n");
+    fflush(stderr);
+
+    // Create authorization header
+    std::string auth = username_ + ":" + password_;
+    std::string base64Auth = base64_encode(auth);
+    std::string authHeader = "Authorization: Basic " + base64Auth;
     
-    nlohmann::json response;
-    if (!makeRequest("POST", "/rest/com/vmware/cis/session", loginData, response)) {
+    fprintf(stderr, "Auth header created, length: %zu\n", authHeader.length());
+    fflush(stderr);
+    
+    // Set headers
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, authHeader.c_str());
+    curl_easy_setopt(curl_, CURLOPT_HTTPHEADER, headers);
+    
+    fprintf(stderr, "Headers set up\n");
+    fflush(stderr);
+    
+    // Build URL
+    std::string url = "https://" + host_ + "/rest/com/vmware/cis/session";
+    
+    fprintf(stderr, "Making request to: %s\n", url.c_str());
+    fflush(stderr);
+    
+    // Set basic CURL options
+    curl_easy_setopt(curl_, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl_, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl_, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl_, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl_, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl_, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl_, CURLOPT_POSTFIELDS, "");
+    
+    Logger::debug("Basic CURL options set");
+    
+    // Set up verbose logging
+    curl_easy_setopt(curl_, CURLOPT_VERBOSE, 1L);
+    FILE* verbose = fopen("/tmp/curl_verbose.log", "a");
+    if (!verbose) {
+        Logger::debug("Failed to open verbose log file");
+    } else {
+        curl_easy_setopt(curl_, CURLOPT_STDERR, verbose);
+    }
+    
+    Logger::debug("Making request to: " + url);
+    
+    // Perform the request
+    Logger::debug("Starting CURL request...");
+    std::string responseData;
+    curl_easy_setopt(curl_, CURLOPT_WRITEFUNCTION, writeCallback);
+    curl_easy_setopt(curl_, CURLOPT_WRITEDATA, &responseData);
+    
+    CURLcode res = curl_easy_perform(curl_);
+    
+    long httpCode = 0;
+    curl_easy_getinfo(curl_, CURLINFO_RESPONSE_CODE, &httpCode);
+    Logger::debug("CURL request completed with code: " + std::to_string(httpCode));
+    
+    if (res != CURLE_OK) {
+        Logger::debug("CURL error: " + std::string(curl_easy_strerror(res)));
+        if (verbose) {
+            fclose(verbose);
+        }
+        curl_slist_free_all(headers);
         return false;
     }
     
-    sessionId_ = response["value"].get<std::string>();
-    isLoggedIn_ = true;
-    return true;
+    Logger::debug("Processing response...");
+    
+    // Parse response
+    try {
+        nlohmann::json response = nlohmann::json::parse(responseData);
+        if (response.contains("value")) {
+            sessionId_ = response["value"];
+            isLoggedIn_ = true;
+            Logger::debug("Login successful!");
+            if (verbose) {
+                fclose(verbose);
+            }
+            curl_slist_free_all(headers);
+            return true;
+        } else {
+            Logger::debug("Response missing session value");
+        }
+    } catch (const nlohmann::json::parse_error& e) {
+        Logger::debug("JSON parse error: " + std::string(e.what()));
+    }
+    
+    Logger::debug("Request failed with status code: " + std::to_string(httpCode));
+    if (verbose) {
+        fclose(verbose);
+    }
+    curl_slist_free_all(headers);
+    return false;
+}
+
+// Helper function to encode string to base64
+std::string VSphereRestClient::base64_encode(const std::string& input) {
+    static const std::string base64_chars = 
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "abcdefghijklmnopqrstuvwxyz"
+        "0123456789+/";
+    
+    std::string ret;
+    int i = 0;
+    int j = 0;
+    unsigned char char_array_3[3];
+    unsigned char char_array_4[4];
+    
+    for (unsigned char c : input) {
+        char_array_3[i++] = c;
+        if (i == 3) {
+            char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+            char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+            char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+            char_array_4[3] = char_array_3[2] & 0x3f;
+            
+            for(i = 0; i < 4; i++)
+                ret += base64_chars[char_array_4[i]];
+            i = 0;
+        }
+    }
+    
+    if (i) {
+        for(j = i; j < 3; j++)
+            char_array_3[j] = '\0';
+        
+        char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+        char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+        char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+        char_array_4[3] = char_array_3[2] & 0x3f;
+        
+        for (j = 0; j < i + 1; j++)
+            ret += base64_chars[char_array_4[j]];
+        
+        while((i++ < 3))
+            ret += '=';
+    }
+    
+    return ret;
 }
 
 bool VSphereRestClient::logout() {
     if (!isLoggedIn_) {
+        Logger::debug("Not logged in, skipping logout");
         return true;
     }
     
+    Logger::debug("Attempting to logout from vCenter");
     nlohmann::json response;
     bool success = makeRequest("DELETE", "/rest/com/vmware/cis/session", nlohmann::json(), response);
     if (success) {
         isLoggedIn_ = false;
         sessionId_.clear();
+        Logger::info("Successfully logged out from vCenter");
+    } else {
+        Logger::error("Failed to logout from vCenter");
     }
     return success;
 }
@@ -60,48 +402,122 @@ std::string VSphereRestClient::getLastError() const {
     return "";
 }
 
+bool VSphereRestClient::makeRequestWithRetry(const std::string& method, const std::string& endpoint, 
+                                           const nlohmann::json& data, nlohmann::json& response,
+                                           int maxRetries) {
+    Logger::debug("Making request with retry: " + method + " " + endpoint);
+    Logger::debug("Max retries: " + std::to_string(maxRetries));
+    
+    for (int i = 0; i < maxRetries; i++) {
+        Logger::debug("Attempt " + std::to_string(i + 1) + " of " + std::to_string(maxRetries));
+        if (makeRequest(method, endpoint, data, response)) {
+            Logger::debug("Request succeeded on attempt " + std::to_string(i + 1));
+            return true;
+        }
+        if (i < maxRetries - 1) {
+            Logger::warning("Request failed, attempt " + std::to_string(i + 1) + " of " + std::to_string(maxRetries));
+            Logger::debug("Waiting 2 seconds before next retry");
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
+    }
+    Logger::error("All retry attempts failed for request: " + method + " " + endpoint);
+    return false;
+}
+
 bool VSphereRestClient::makeRequest(const std::string& method, const std::string& endpoint, 
                                   const nlohmann::json& data, nlohmann::json& response) {
     if (!curl_) {
+        Logger::error("CURL not initialized");
         return false;
     }
 
-    std::string url = buildUrl(endpoint);
-    std::string responseData;
-    
-    curl_easy_reset(curl_);
+    std::string url = "https://" + host_ + endpoint;
+    Logger::debug("Making " + method + " request to: " + url);
+    if (!data.empty()) {
+        Logger::debug("Request body: " + data.dump());
+    }
+
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, "Accept: application/json");
+
+    // Add session ID if available
+    if (!sessionId_.empty()) {
+        std::string sessionHeader = "vmware-api-session-id: " + sessionId_;
+        headers = curl_slist_append(headers, sessionHeader.c_str());
+        Logger::debug("Added session ID to request");
+    }
+
     curl_easy_setopt(curl_, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl_, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl_, CURLOPT_TCP_KEEPALIVE, 1L);
+    curl_easy_setopt(curl_, CURLOPT_TCP_KEEPIDLE, 30L);
+    curl_easy_setopt(curl_, CURLOPT_TCP_KEEPINTVL, 30L);
+
+    // Add verbose logging for CURL
+    curl_easy_setopt(curl_, CURLOPT_VERBOSE, 1L);
+    FILE* verbose = fopen("/tmp/curl_verbose.log", "a");
+    if (verbose) {
+        fprintf(verbose, "\n=== Main Request ===\n");
+        fprintf(verbose, "URL: %s\n", url.c_str());
+        fprintf(verbose, "Method: %s\n", method.c_str());
+        fprintf(verbose, "Headers:\n");
+        fprintf(verbose, "  Content-Type: application/json\n");
+        fprintf(verbose, "  Accept: application/json\n");
+        if (!sessionId_.empty()) {
+            fprintf(verbose, "  vmware-api-session-id: %s\n", sessionId_.c_str());
+        }
+        if (!data.empty()) {
+            fprintf(verbose, "Body: %s\n", data.dump().c_str());
+        }
+        curl_easy_setopt(curl_, CURLOPT_STDERR, verbose);
+    }
+
+    std::string responseData;
     curl_easy_setopt(curl_, CURLOPT_WRITEFUNCTION, writeCallback);
     curl_easy_setopt(curl_, CURLOPT_WRITEDATA, &responseData);
-    
-    struct curl_slist* headers = nullptr;
-    setCommonHeaders(headers);
-    
+
     if (method == "POST" || method == "PUT") {
         std::string jsonData = data.dump();
         curl_easy_setopt(curl_, CURLOPT_POSTFIELDS, jsonData.c_str());
-        headers = curl_slist_append(headers, "Content-Type: application/json");
+        curl_easy_setopt(curl_, CURLOPT_CUSTOMREQUEST, method.c_str());
+    } else if (method == "DELETE") {
+        curl_easy_setopt(curl_, CURLOPT_CUSTOMREQUEST, "DELETE");
     }
-    
-    curl_easy_setopt(curl_, CURLOPT_HTTPHEADER, headers);
-    
+
     CURLcode res = curl_easy_perform(curl_);
-    curl_slist_free_all(headers);
-    
+    long httpCode = 0;
+    curl_easy_getinfo(curl_, CURLINFO_RESPONSE_CODE, &httpCode);
+
+    if (verbose) {
+        fprintf(verbose, "\nResponse Code: %ld\n", httpCode);
+        fprintf(verbose, "Response Body: %s\n", responseData.c_str());
+        fclose(verbose);
+    }
+
     if (res != CURLE_OK) {
-        handleError(method + " " + endpoint, nlohmann::json::object());
+        Logger::error("Request failed: " + std::string(curl_easy_strerror(res)));
+        curl_slist_free_all(headers);
         return false;
     }
-    
-    try {
-        response = nlohmann::json::parse(responseData);
-        if (!checkResponse(response)) {
-            handleError(method + " " + endpoint, response);
+
+    Logger::debug("Response code: " + std::to_string(httpCode));
+    Logger::debug("Response body: " + responseData);
+
+    if (httpCode >= 200 && httpCode < 300) {
+        try {
+            response = nlohmann::json::parse(responseData);
+            curl_slist_free_all(headers);
+            return true;
+        } catch (const std::exception& e) {
+            Logger::error("Failed to parse response: " + std::string(e.what()));
+            curl_slist_free_all(headers);
             return false;
         }
-        return true;
-    } catch (const std::exception& e) {
-        handleError(method + " " + endpoint, nlohmann::json::object());
+    } else {
+        Logger::error("Request failed with status code: " + std::to_string(httpCode));
+        Logger::debug("Full response: " + responseData);
+        curl_slist_free_all(headers);
         return false;
     }
 }
@@ -751,4 +1167,32 @@ bool VSphereRestClient::getBackup(const std::string& backupId, std::string& resp
         response = jsonResponse.dump();
     }
     return success;
+}
+
+bool VSphereRestClient::refreshSession() {
+    if (!isLoggedIn_) {
+        return false;
+    }
+    
+    nlohmann::json response;
+    if (makeRequest("POST", "/rest/com/vmware/cis/session/refresh", nlohmann::json(), response)) {
+        try {
+            sessionId_ = response["value"].get<std::string>();
+            Logger::debug("Successfully refreshed session");
+            return true;
+        } catch (const std::exception& e) {
+            Logger::error("Failed to parse session refresh response: " + std::string(e.what()));
+            return false;
+        }
+    }
+    return false;
+}
+
+void VSphereRestClient::logTokenInfo(const std::string& operation, const std::string& tokenType) {
+    Logger::debug(tokenType + " token " + operation + ":");
+    if (tokenType == "STS") {
+        auto timeLeft = std::chrono::duration_cast<std::chrono::minutes>(
+            stsTokenExpiry_ - std::chrono::system_clock::now());
+        Logger::debug("  Expires in: " + std::to_string(timeLeft.count()) + " minutes");
+    }
 }

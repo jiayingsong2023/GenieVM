@@ -91,7 +91,46 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
         } else if (arg == "-u" || arg == "--username") {
             if (i + 1 < argc) username = argv[++i];
         } else if (arg == "-p" || arg == "--password") {
-            if (i + 1 < argc) password = argv[++i];
+            if (i + 1 < argc) {
+                // Get the raw password from command line
+                password = argv[++i];
+                
+                // Log initial password details
+                Logger::debug("Initial password length: " + std::to_string(password.length()));
+                if (!password.empty()) {
+                    Logger::debug("Password first char: " + std::string(1, password[0]));
+                    Logger::debug("Password last char: " + std::string(1, password[password.length() - 1]));
+                }
+
+                // Handle escaped special characters in password
+                std::string processedPassword;
+                for (size_t i = 0; i < password.length(); i++) {
+                    if (password[i] == '\\' && i + 1 < password.length()) {
+                        // Skip the backslash and include the next character as is
+                        processedPassword += password[i + 1];
+                        i++; // Skip the next character since we've already processed it
+                    } else if (password[i] == '%' && i + 1 < password.length() && password[i + 1] == '%') {
+                        // Handle double percent
+                        processedPassword += '%';
+                        i++; // Skip the next percent
+                    } else {
+                        processedPassword += password[i];
+                    }
+                }
+                password = processedPassword;
+
+                // Remove any terminal-related characters
+                password.erase(std::remove(password.begin(), password.end(), '\n'), password.end());
+                password.erase(std::remove(password.begin(), password.end(), '\r'), password.end());
+                password.erase(std::remove(password.begin(), password.end(), '\0'), password.end());
+
+                // Log final password details
+                Logger::debug("Final password length after processing: " + std::to_string(password.length()));
+                if (!password.empty()) {
+                    Logger::debug("Final password first char: " + std::string(1, password[0]));
+                    Logger::debug("Final password last char: " + std::string(1, password[password.length() - 1]));
+                }
+            }
         } else if (arg == "-i" || arg == "--incremental") {
             config.incremental = true;
         } else if (arg == "--schedule") {

@@ -6,6 +6,15 @@
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include "common/logger.hpp"
+#include <chrono>
+
+// Forward declaration of STSChallenge struct
+struct STSChallenge {
+    std::string realm;
+    std::string service;
+    std::string stsUrl;
+    std::string signRealm;
+};
 
 class VSphereRestClient {
 public:
@@ -17,6 +26,10 @@ public:
     bool logout();
     bool isLoggedIn() const;
     std::string getLastError() const;
+    bool refreshSession();
+
+    // Static callback function for CURL
+    static size_t writeCallback(void* contents, size_t size, size_t nmemb, std::string* userp);
 
     // VM Operations
     bool getVMInfo(const std::string& vmId, nlohmann::json& vmInfo);
@@ -84,16 +97,25 @@ private:
     // Helper methods
     bool makeRequest(const std::string& method, const std::string& endpoint, 
                     const nlohmann::json& data, nlohmann::json& response);
+    bool makeRequestWithRetry(const std::string& method, const std::string& endpoint, 
+                            const nlohmann::json& data, nlohmann::json& response,
+                            int maxRetries = 3);
     std::string buildUrl(const std::string& endpoint) const;
     void setCommonHeaders(struct curl_slist*& headers);
     bool checkResponse(const nlohmann::json& response) const;
-    static size_t writeCallback(void* contents, size_t size, size_t nmemb, std::string* userp);
     void handleError(const std::string& operation, const nlohmann::json& response);
+    std::string base64_encode(const std::string& input);
+    bool refreshSTSToken();
+    bool isSTSTokenExpired() const;
+    void logTokenInfo(const std::string& operation, const std::string& tokenType);
 
+    // Member variables
     std::string host_;
     std::string username_;
     std::string password_;
     std::string sessionId_;
+    std::string stsToken_;
+    std::chrono::system_clock::time_point stsTokenExpiry_;
     CURL* curl_;
     bool isLoggedIn_;
     std::string lastError_;

@@ -25,18 +25,28 @@ VMwareConnection::~VMwareConnection() {
 }
 
 bool VMwareConnection::connect(const std::string& host, const std::string& username, const std::string& password) {
+    Logger::info("Initializing VMware connection to: " + host);
+    
     host_ = host;
     username_ = username;
     password_ = password;
     
     if (!restClient_) {
+        Logger::debug("Creating new REST client instance");
         restClient_ = std::make_unique<VSphereRestClient>(host, username, password);
     }
     
+    Logger::info("Attempting to establish connection to vCenter/ESXi");
     connected_ = restClient_->login();
     if (!connected_) {
         lastError_ = "Failed to connect to vCenter/ESXi";
-        Logger::error(lastError_);
+        Logger::error(lastError_ + ". Please check the following:");
+        Logger::error("1. vCenter/ESXi host is reachable");
+        Logger::error("2. Credentials are correct");
+        Logger::error("3. Network connectivity and firewall settings");
+        Logger::error("4. SSL/TLS configuration");
+    } else {
+        Logger::info("Successfully connected to vCenter/ESXi");
     }
     return connected_;
 }

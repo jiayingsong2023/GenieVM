@@ -1,5 +1,9 @@
 #include <iostream>
 #include <string>
+#include "common/logger.hpp"
+#include <filesystem>
+#include <cstdio>
+#include <CLI/CLI.hpp>
 
 // Forward declarations
 int backupMain(int argc, char* argv[]);
@@ -15,6 +19,29 @@ void printMainUsage() {
 }
 
 int main(int argc, char* argv[]) {
+    // Immediate debug output to stderr
+    fprintf(stderr, "Starting GenieVM...\n");
+    fflush(stderr);
+
+    // Initialize logger
+    fprintf(stderr, "Initializing logger...\n");
+    fflush(stderr);
+    
+    if (!Logger::initialize("/tmp/genievm.log", LogLevel::DEBUG)) {
+        fprintf(stderr, "Failed to initialize logger\n");
+        fflush(stderr);
+        return 1;
+    }
+    
+    fprintf(stderr, "Logger initialized successfully\n");
+    fflush(stderr);
+
+    // Parse command line arguments
+    fprintf(stderr, "Parsing command line arguments...\n");
+    fflush(stderr);
+    
+    CLI::App app{"GenieVM - VMware vSphere Backup and Restore Tool"};
+
     if (argc < 2) {
         printMainUsage();
         return 1;
