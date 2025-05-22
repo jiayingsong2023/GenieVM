@@ -5,6 +5,11 @@
 #include <sstream>
 #include <stdexcept>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <cstdlib>
+#include <openssl/evp.h>
+#include <openssl/err.h>
 
 KVMBackupProvider::KVMBackupProvider()
     : connection_(nullptr)
@@ -271,40 +276,34 @@ bool KVMBackupProvider::resumeBackup(const std::string& backupId) {
     return false;
 }
 
-bool KVMBackupProvider::getBackupStatus(const std::string& backupId, std::string& status, double& progress) const {
-    if (!connection_) {
-        lastError_ = "Not connected";
-        return false;
-    }
-
+BackupStatus KVMBackupProvider::getBackupStatus(const std::string& backupId) const {
+    BackupStatus status;
     auto it = backupJobs_.find(backupId);
     if (it == backupJobs_.end()) {
-        lastError_ = "Backup job not found";
-        return false;
+        status.state = BackupState::NotStarted;
+        status.status = "not_found";
+        status.progress = 0.0;
+        return status;
     }
 
-    // Convert BackupJob::Status enum to string
-    switch (it->second->getStatus()) {
-        case BackupJob::Status::PENDING:
-            status = "pending";
-            break;
-        case BackupJob::Status::RUNNING:
-            status = "running";
-            break;
-        case BackupJob::Status::COMPLETED:
-            status = "completed";
-            break;
-        case BackupJob::Status::FAILED:
-            status = "failed";
-            break;
-        case BackupJob::Status::CANCELLED:
-            status = "cancelled";
-            break;
-        default:
-            status = "unknown";
+    std::string jobStatus = it->second->getStatus();
+    if (jobStatus == "pending") {
+        status.state = BackupState::NotStarted;
+    } else if (jobStatus == "running") {
+        status.state = BackupState::InProgress;
+    } else if (jobStatus == "completed") {
+        status.state = BackupState::Completed;
+    } else if (jobStatus == "failed") {
+        status.state = BackupState::Failed;
+    } else if (jobStatus == "cancelled") {
+        status.state = BackupState::Cancelled;
+    } else if (jobStatus == "paused") {
+        status.state = BackupState::Paused;
     }
-    progress = it->second->getProgress();
-    return true;
+
+    status.status = jobStatus;
+    status.progress = it->second->getProgress();
+    return status;
 }
 
 bool KVMBackupProvider::startRestore(const std::string& vmId, const std::string& backupId) {
@@ -400,46 +399,34 @@ bool KVMBackupProvider::resumeRestore(const std::string& restoreId) {
     return true;
 }
 
-bool KVMBackupProvider::getRestoreStatus(const std::string& restoreId, std::string& status, double& progress) const {
-    if (!connection_) {
-        lastError_ = "Not connected";
-        return false;
-    }
-
+RestoreStatus KVMBackupProvider::getRestoreStatus(const std::string& restoreId) const {
+    RestoreStatus status;
     auto it = restoreJobs_.find(restoreId);
     if (it == restoreJobs_.end()) {
-        lastError_ = "Restore job not found";
-        return false;
+        status.state = RestoreState::NotStarted;
+        status.status = "not_found";
+        status.progress = 0.0;
+        return status;
     }
 
-    // Convert RestoreStatus enum to string
-    switch (it->second->getStatus()) {
-        case RestoreStatus::NOT_FOUND:
-            status = "not_found";
-            break;
-        case RestoreStatus::PENDING:
-            status = "pending";
-            break;
-        case RestoreStatus::RUNNING:
-            status = "running";
-            break;
-        case RestoreStatus::PAUSED:
-            status = "paused";
-            break;
-        case RestoreStatus::COMPLETED:
-            status = "completed";
-            break;
-        case RestoreStatus::FAILED:
-            status = "failed";
-            break;
-        case RestoreStatus::CANCELLED:
-            status = "cancelled";
-            break;
-        default:
-            status = "unknown";
+    std::string jobStatus = it->second->getStatus();
+    if (jobStatus == "pending") {
+        status.state = RestoreState::NotStarted;
+    } else if (jobStatus == "running") {
+        status.state = RestoreState::InProgress;
+    } else if (jobStatus == "completed") {
+        status.state = RestoreState::Completed;
+    } else if (jobStatus == "failed") {
+        status.state = RestoreState::Failed;
+    } else if (jobStatus == "cancelled") {
+        status.state = RestoreState::Cancelled;
+    } else if (jobStatus == "paused") {
+        status.state = RestoreState::Paused;
     }
-    progress = it->second->getProgress();
-    return true;
+
+    status.status = jobStatus;
+    status.progress = it->second->getProgress();
+    return status;
 }
 
 bool KVMBackupProvider::enableCBT(const std::string& vmId) {
@@ -643,4 +630,165 @@ bool KVMBackupProvider::removeSnapshot(const std::string& vmId, const std::strin
     virDomainFree(domain);
 
     return true;
+}
+
+bool KVMBackupProvider::verifyBackup(const std::string& backupId) {
+    try {
+        if (!std::filesystem::exists(backupId)) {
+            lastError_ = "Backup not found: " + backupId;
+            return false;
+        }
+
+        // Get backup metadata
+        auto metadata = getLatestBackupInfo(backupId);
+        if (!metadata) {
+            lastError_ = "Failed to get backup metadata";
+            return false;
+        }
+
+        // Verify each disk file
+        for (const auto& disk : metadata->disks) {
+            std::string diskPath = backupId + "/" + disk;
+            if (!std::filesystem::exists(diskPath)) {
+                lastError_ = "Disk file not found: " + diskPath;
+                return false;
+            }
+
+            // Verify disk integrity
+            if (!verifyDiskIntegrity(diskPath)) {
+                lastError_ = "Disk integrity check failed: " + diskPath;
+                return false;
+            }
+        }
+
+        // Verify checksum
+        std::string currentChecksum = calculateChecksum(backupId);
+        if (currentChecksum != metadata->checksum) {
+            lastError_ = "Checksum mismatch";
+            return false;
+        }
+
+        return true;
+    } catch (const std::exception& e) {
+        lastError_ = std::string("Failed to verify backup: ") + e.what();
+        return false;
+    }
+}
+
+double KVMBackupProvider::getProgress() const {
+    return progress_;
+}
+
+std::optional<BackupMetadata> KVMBackupProvider::getLatestBackupInfo(const std::string& backupId) {
+    try {
+        std::string metadataPath = backupId + "/metadata.json";
+        if (!std::filesystem::exists(metadataPath)) {
+            return std::nullopt;
+        }
+
+        std::ifstream file(metadataPath);
+        if (!file.is_open()) {
+            return std::nullopt;
+        }
+
+        nlohmann::json metadata;
+        file >> metadata;
+        
+        BackupMetadata result;
+        result.backupId = metadata["backupId"].get<std::string>();
+        result.vmId = metadata["vmId"].get<std::string>();
+        result.timestamp = metadata["timestamp"].get<int64_t>();
+        result.type = static_cast<BackupType>(metadata["type"].get<int>());
+        result.size = metadata["size"].get<int64_t>();
+        result.disks = metadata["disks"].get<std::vector<std::string>>();
+        result.checksum = metadata["checksum"].get<std::string>();
+        
+        return result;
+    } catch (const std::exception& e) {
+        lastError_ = std::string("Failed to read backup metadata: ") + e.what();
+        return std::nullopt;
+    }
+}
+
+bool KVMBackupProvider::verifyDiskIntegrity(const std::string& diskPath) {
+    try {
+        // For qcow2 format, we can use qemu-img check
+        if (getDiskFormat(diskPath) == "qcow2") {
+            std::string cmd = "qemu-img check " + diskPath;
+            int result = std::system(cmd.c_str());
+            return result == 0;
+        }
+        
+        // For raw format, we can do basic file checks
+        std::ifstream file(diskPath, std::ios::binary);
+        if (!file.is_open()) {
+            return false;
+        }
+
+        // Check if file is readable and has valid size
+        file.seekg(0, std::ios::end);
+        std::streamsize size = file.tellg();
+        return size > 0;
+    } catch (const std::exception& e) {
+        lastError_ = std::string("Failed to verify disk integrity: ") + e.what();
+        return false;
+    }
+}
+
+std::string KVMBackupProvider::calculateChecksum(const std::string& filePath) {
+    try {
+        std::ifstream file(filePath, std::ios::binary);
+        if (!file.is_open()) {
+            return "";
+        }
+
+        // Initialize OpenSSL context
+        EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+        if (!ctx) {
+            lastError_ = "Failed to create OpenSSL context";
+            return "";
+        }
+
+        // Initialize digest
+        if (EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) != 1) {
+            EVP_MD_CTX_free(ctx);
+            lastError_ = "Failed to initialize digest";
+            return "";
+        }
+
+        // Read and update digest
+        char buffer[4096];
+        while (file.good()) {
+            file.read(buffer, sizeof(buffer));
+            if (file.gcount() > 0) {
+                if (EVP_DigestUpdate(ctx, buffer, file.gcount()) != 1) {
+                    EVP_MD_CTX_free(ctx);
+                    lastError_ = "Failed to update digest";
+                    return "";
+                }
+            }
+        }
+
+        // Finalize digest
+        unsigned char hash[EVP_MAX_MD_SIZE];
+        unsigned int hashLen;
+        if (EVP_DigestFinal_ex(ctx, hash, &hashLen) != 1) {
+            EVP_MD_CTX_free(ctx);
+            lastError_ = "Failed to finalize digest";
+            return "";
+        }
+
+        // Clean up
+        EVP_MD_CTX_free(ctx);
+
+        // Convert hash to hex string
+        std::stringstream ss;
+        for (unsigned int i = 0; i < hashLen; i++) {
+            ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(hash[i]);
+        }
+        return ss.str();
+    } catch (const std::exception& e) {
+        lastError_ = std::string("Failed to calculate checksum: ") + e.what();
+        return "";
+    }
 } 

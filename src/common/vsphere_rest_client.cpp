@@ -223,6 +223,8 @@ VSphereRestClient::~VSphereRestClient() {
     if (isLoggedIn_ && !sessionId_.empty()) {
         Logger::debug("Logging out before cleanup");
         logout();
+        isLoggedIn_ = false;  // Ensure we don't try to logout again
+        sessionId_.clear();
     }
     if (curl_) {
         curl_easy_cleanup(curl_);

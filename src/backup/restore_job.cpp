@@ -10,7 +10,7 @@ RestoreJob::RestoreJob(const std::string& vmId, const std::string& backupId, con
     : vmId_(vmId)
     , backupId_(backupId)
     , config_(config)
-    , status_(RestoreStatus::PENDING)
+    , status_("pending")
     , progress_(0.0)
     , cancelled_(false)
     , vsphereClient_(std::make_shared<VSphereRestClient>(
@@ -20,25 +20,24 @@ RestoreJob::RestoreJob(const std::string& vmId, const std::string& backupId, con
 }
 
 RestoreJob::~RestoreJob() {
-    if (status_ == RestoreStatus::RUNNING) {
+    if (status_ == "running") {
         stop();
     }
 }
 
 bool RestoreJob::start() {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    if (status_ == RestoreStatus::RUNNING) {
-        Logger::error("Restore already in progress");
+    if (status_ == "running") {
         return false;
     }
 
     if (!validateConfig()) {
-        status_ = RestoreStatus::FAILED;
+        setError("Invalid restore configuration");
+        status_ = "failed";
         return false;
     }
 
-    status_ = RestoreStatus::RUNNING;
+    status_ = "running";
     cancelled_ = false;
     restoreFuture_ = std::async(std::launch::async, &RestoreJob::runRestore, this);
     return true;
@@ -46,42 +45,40 @@ bool RestoreJob::start() {
 
 bool RestoreJob::stop() {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    if (status_ != RestoreStatus::RUNNING && status_ != RestoreStatus::PAUSED) {
-        return true;
+    if (status_ != "running" && status_ != "paused") {
+        return false;
     }
 
     cancelled_ = true;
     if (restoreFuture_.valid()) {
         restoreFuture_.wait();
     }
-    status_ = RestoreStatus::CANCELLED;
+
+    status_ = "cancelled";
     return true;
 }
 
 bool RestoreJob::pause() {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    if (status_ != RestoreStatus::RUNNING) {
+    if (status_ != "running") {
         return false;
     }
 
-    status_ = RestoreStatus::PAUSED;
+    status_ = "paused";
     return true;
 }
 
 bool RestoreJob::resume() {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    if (status_ != RestoreStatus::PAUSED) {
+    if (status_ != "paused") {
         return false;
     }
 
-    status_ = RestoreStatus::RUNNING;
+    status_ = "running";
     return true;
 }
 
-RestoreStatus RestoreJob::getStatus() const {
+std::string RestoreJob::getStatus() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return status_;
 }
@@ -144,7 +141,7 @@ void RestoreJob::runRestore() {
         updateProgress(0.2);  // 20% complete
 
         if (cancelled_) {
-            status_ = RestoreStatus::CANCELLED;
+            status_ = "cancelled";
             return;
         }
 
@@ -168,7 +165,7 @@ void RestoreJob::runRestore() {
             updateProgress(diskProgress);
 
             if (cancelled_) {
-                status_ = RestoreStatus::CANCELLED;
+                status_ = "cancelled";
                 return;
             }
         }
@@ -187,11 +184,11 @@ void RestoreJob::runRestore() {
             }
         }
 
-        status_ = RestoreStatus::COMPLETED;
+        status_ = "completed";
         updateProgress(1.0);
     } catch (const std::exception& e) {
+        status_ = "failed";
         setError(e.what());
-        status_ = RestoreStatus::FAILED;
     }
 }
 

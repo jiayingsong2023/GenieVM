@@ -159,13 +159,20 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
 
     Logger::info("Successfully connected to vCenter");
     
-    // Start backup
-    if (!manager_->startBackup(config.vmId, config)) {
-        Logger::error("Failed to start backup: " + manager_->getLastError());
-        return;
+    try {
+        // Start backup
+        if (!manager_->startBackup(config.vmId, config)) {
+            Logger::error("Failed to start backup: " + manager_->getLastError());
+            return;
+        }
+
+        Logger::info("Backup started successfully");
+    } catch (const std::exception& e) {
+        Logger::error("Error during backup: " + std::string(e.what()));
     }
 
-    Logger::info("Backup started successfully");
+    // Note: Connection will be closed by BackupCLI destructor when the object is destroyed
+    // This ensures the connection remains active throughout the backup process
 }
 
 void BackupCLI::handleScheduleCommand(int argc, char* argv[]) {

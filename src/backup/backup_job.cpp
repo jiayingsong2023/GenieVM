@@ -8,68 +8,67 @@
 BackupJob::BackupJob(std::shared_ptr<BackupProvider> provider, const BackupConfig& config)
     : provider_(provider)
     , config_(config)
-    , status_(Status::PENDING)
+    , status_("pending")
     , progress_(0.0)
-    , running_(false)
-    , paused_(false)
+    , isRunning_(false)
+    , isPaused_(false)
 {
     id_ = generateId();
 }
 
 BackupJob::~BackupJob() {
     cancel();
-    if (worker_.joinable()) {
-        worker_.join();
-    }
 }
 
-void BackupJob::start() {
+bool BackupJob::start() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (status_ == Status::RUNNING) {
-        return;
+    if (isRunning_) {
+        return false;
     }
 
-    status_ = Status::RUNNING;
-    running_ = true;
-    worker_ = std::thread(&BackupJob::workerFunction, this);
+    status_ = "running";
+    isRunning_ = true;
+    return true;
 }
 
-void BackupJob::cancel() {
+bool BackupJob::cancel() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (status_ != Status::RUNNING) {
-        return;
+    if (!isRunning_) {
+        return false;
     }
 
-    running_ = false;
-    status_ = Status::CANCELLED;
-    if (worker_.joinable()) {
-        worker_.join();
-    }
+    isRunning_ = false;
+    status_ = "cancelled";
+    return true;
 }
 
-void BackupJob::verifyBackup() {
+bool BackupJob::pause() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (status_ != Status::COMPLETED) {
-        setError("Cannot verify incomplete backup");
-        return;
+    if (!isRunning_ || isPaused_) {
+        return false;
     }
 
-    try {
-        if (!provider_->verifyBackup(id_)) {
-            setError("Verification failed: " + provider_->getLastError());
-            return;
-        }
-        updateStatus("Verification completed successfully");
-    } catch (const std::exception& e) {
-        setError(std::string("Verification failed: ") + e.what());
+    isPaused_ = true;
+    status_ = "paused";
+    return true;
+}
+
+bool BackupJob::resume() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!isRunning_ || !isPaused_) {
+        return false;
     }
+
+    isPaused_ = false;
+    status_ = "running";
+    return true;
 }
 
 std::string BackupJob::getId() const {
     return id_;
 }
 
-BackupJob::Status BackupJob::getStatus() const {
+std::string BackupJob::getStatus() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return status_;
 }
@@ -79,52 +78,61 @@ double BackupJob::getProgress() const {
     return progress_;
 }
 
-std::string BackupJob::getErrorMessage() const {
+std::string BackupJob::getError() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return errorMessage_;
+    return error_;
 }
 
-void BackupJob::setProgressCallback(std::function<void(int)> callback) {
+bool BackupJob::isRunning() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return isRunning_;
+}
+
+bool BackupJob::isPaused() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return isPaused_;
+}
+
+BackupConfig BackupJob::getConfig() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_;
+}
+
+void BackupJob::setConfig(const BackupConfig& config) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    config_ = config;
+}
+
+void BackupJob::setProgressCallback(ProgressCallback callback) {
     std::lock_guard<std::mutex> lock(mutex_);
     progressCallback_ = callback;
 }
 
-void BackupJob::setStatusCallback(std::function<void(const std::string&)> callback) {
+void BackupJob::setStatusCallback(StatusCallback callback) {
     std::lock_guard<std::mutex> lock(mutex_);
     statusCallback_ = callback;
 }
 
-void BackupJob::workerFunction() {
-    try {
-        updateStatus("Starting backup");
-        provider_->initialize();
-        
-        while (running_ && !paused_) {
-            // Perform backup operations
-            double progress = provider_->getProgress();
-            updateProgress(progress);
-            
-            if (progress >= 100.0) {
-                break;
-            }
-            
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        
-        if (running_) {
-            status_ = Status::COMPLETED;
-            updateStatus("Backup completed successfully");
-        }
-    } catch (const std::exception& e) {
-        setError(std::string("Backup failed: ") + e.what());
-        status_ = Status::FAILED;
-    }
-}
-
-void BackupJob::updateStatus(const std::string& status) {
+bool BackupJob::verifyBackup() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (statusCallback_) {
-        statusCallback_(status);
+    if (!isRunning_) {
+        setError("Cannot verify incomplete backup");
+        return false;
+    }
+
+    try {
+        if (!provider_->verifyBackup(id_)) {
+            setError("Verification failed: " + provider_->getLastError());
+            return false;
+        }
+        status_ = "verified";
+        if (statusCallback_) {
+            statusCallback_("Verification completed successfully");
+        }
+        return true;
+    } catch (const std::exception& e) {
+        setError(std::string("Verification failed: ") + e.what());
+        return false;
     }
 }
 
@@ -138,8 +146,8 @@ void BackupJob::updateProgress(double progress) {
 
 void BackupJob::setError(const std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);
-    errorMessage_ = error;
-    status_ = Status::FAILED;
+    error_ = error;
+    status_ = "failed";
     if (statusCallback_) {
         statusCallback_(error);
     }

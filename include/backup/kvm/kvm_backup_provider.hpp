@@ -4,11 +4,15 @@
 #include "backup/kvm/cbt_factory.hpp"
 #include "backup/backup_job.hpp"
 #include "backup/restore_job.hpp"
+#include "common/backup_status.hpp"
 #include <memory>
 #include <libvirt/libvirt.h>
 #include <string>
 #include <vector>
 #include <map>
+#include <unordered_map>
+#include <optional>
+#include <mutex>
 
 class KVMBackupProvider : public BackupProvider, public std::enable_shared_from_this<KVMBackupProvider> {
 public:
@@ -31,14 +35,14 @@ public:
     bool cancelBackup(const std::string& backupId) override;
     bool pauseBackup(const std::string& backupId) override;
     bool resumeBackup(const std::string& backupId) override;
-    bool getBackupStatus(const std::string& backupId, std::string& status, double& progress) const override;
+    BackupStatus getBackupStatus(const std::string& backupId) const override;
 
     // Restore operations
     bool startRestore(const std::string& vmId, const std::string& backupId) override;
     bool cancelRestore(const std::string& restoreId) override;
     bool pauseRestore(const std::string& restoreId) override;
     bool resumeRestore(const std::string& restoreId) override;
-    bool getRestoreStatus(const std::string& restoreId, std::string& status, double& progress) const override;
+    RestoreStatus getRestoreStatus(const std::string& restoreId) const override;
 
     // CBT operations
     bool enableCBT(const std::string& vmId) override;
@@ -59,19 +63,26 @@ public:
     std::string getLastError() const override { return lastError_; }
     void clearLastError() override;
 
+    // Additional methods
+    bool verifyBackup(const std::string& backupId) override;
+    double getProgress() const override;
+
 private:
     virConnectPtr connection_;
     std::unique_ptr<CBTFactory> cbtFactory_;
+    std::unordered_map<std::string, std::shared_ptr<BackupJob>> backupJobs_;
+    std::unordered_map<std::string, std::shared_ptr<RestoreJob>> restoreJobs_;
     ProgressCallback progressCallback_;
     StatusCallback statusCallback_;
     mutable std::string lastError_;
+    double progress_{0.0};
+    mutable std::mutex mutex_;
 
     // Helper methods
     bool initializeCBT(const std::string& vmId);
     bool cleanupCBT(const std::string& vmId);
     std::string getDiskFormat(const std::string& diskPath) const;
-
-    // Backup and restore job management
-    std::map<std::string, std::unique_ptr<BackupJob>> backupJobs_;
-    std::map<std::string, std::unique_ptr<RestoreJob>> restoreJobs_;
+    std::optional<BackupMetadata> getLatestBackupInfo(const std::string& backupId);
+    bool verifyDiskIntegrity(const std::string& diskPath);
+    std::string calculateChecksum(const std::string& filePath);
 }; 

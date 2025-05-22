@@ -18,16 +18,6 @@
 #include "common/vsphere_manager.hpp"
 #include "backup/vm_config.hpp"
 
-enum class RestoreStatus {
-    NOT_FOUND,
-    PENDING,
-    RUNNING,
-    PAUSED,
-    COMPLETED,
-    FAILED,
-    CANCELLED
-};
-
 class RestoreJob {
 public:
     RestoreJob(const std::string& vmId, const std::string& backupId, const RestoreConfig& config);
@@ -40,7 +30,7 @@ public:
     bool resume();
 
     // Status and information
-    RestoreStatus getStatus() const;
+    std::string getStatus() const;
     std::string getVMId() const;
     std::string getBackupId() const;
     const RestoreConfig& getConfig() const;
@@ -56,7 +46,7 @@ private:
     std::string vmId_;
     std::string backupId_;
     RestoreConfig config_;
-    RestoreStatus status_;
+    std::string status_;
     double progress_;
     bool cancelled_;
     std::future<void> restoreFuture_;

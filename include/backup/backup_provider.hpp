@@ -1,10 +1,15 @@
 #pragma once
 
-#include <string>
+#include "common/backup_status.hpp"
+#include "backup/vm_config.hpp"
 #include <memory>
+#include <string>
 #include <vector>
 #include <functional>
-#include "backup/vm_config.hpp"
+
+// Type definitions
+using ProgressCallback = std::function<void(int)>;
+using StatusCallback = std::function<void(const std::string&)>;
 
 class BackupProvider {
 public:
@@ -26,25 +31,23 @@ public:
     virtual bool cancelBackup(const std::string& backupId) = 0;
     virtual bool pauseBackup(const std::string& backupId) = 0;
     virtual bool resumeBackup(const std::string& backupId) = 0;
-    virtual bool getBackupStatus(const std::string& backupId, std::string& status, double& progress) const = 0;
+    virtual BackupStatus getBackupStatus(const std::string& backupId) const = 0;
 
     // Restore operations
     virtual bool startRestore(const std::string& vmId, const std::string& backupId) = 0;
     virtual bool cancelRestore(const std::string& restoreId) = 0;
     virtual bool pauseRestore(const std::string& restoreId) = 0;
     virtual bool resumeRestore(const std::string& restoreId) = 0;
-    virtual bool getRestoreStatus(const std::string& restoreId, std::string& status, double& progress) const = 0;
+    virtual RestoreStatus getRestoreStatus(const std::string& restoreId) const = 0;
 
-    // CBT (Changed Block Tracking) operations
+    // CBT operations
     virtual bool enableCBT(const std::string& vmId) = 0;
     virtual bool disableCBT(const std::string& vmId) = 0;
     virtual bool isCBTEnabled(const std::string& vmId) const = 0;
-    virtual bool getChangedBlocks(const std::string& vmId, const std::string& diskPath, 
+    virtual bool getChangedBlocks(const std::string& vmId, const std::string& diskPath,
                                 std::vector<std::pair<uint64_t, uint64_t>>& changedBlocks) const = 0;
 
-    // Progress and status callbacks
-    using ProgressCallback = std::function<void(double progress)>;
-    using StatusCallback = std::function<void(const std::string& status)>;
+    // Callbacks
     virtual void setProgressCallback(ProgressCallback callback) = 0;
     virtual void setStatusCallback(StatusCallback callback) = 0;
 
@@ -52,7 +55,7 @@ public:
     virtual std::string getLastError() const = 0;
     virtual void clearLastError() = 0;
 
-    // Backup verification
+    // Additional methods
     virtual bool verifyBackup(const std::string& backupId) = 0;
     virtual double getProgress() const = 0;
 }; 

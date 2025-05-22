@@ -13,9 +13,6 @@
 #include <map>
 #include <mutex>
 
-// Forward declarations
-class BackupJob;
-
 // Type definitions
 using ProgressCallback = std::function<void(int)>;
 using StatusCallback = std::function<void(const std::string&)>;
