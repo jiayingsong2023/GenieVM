@@ -584,35 +584,51 @@ std::optional<BackupMetadata> VMwareBackupProvider::getLatestBackupInfo(const st
 }
 
 std::string VMwareBackupProvider::calculateChecksum(const std::string& filePath) {
-    try {
-        std::ifstream file(filePath, std::ios::binary);
-        if (!file.is_open()) {
-            throw std::runtime_error("Failed to open file: " + filePath);
-        }
+    const size_t bufferSize = 1 << 12; // 4KB
+    std::vector<unsigned char> buffer(bufferSize);
+    unsigned char hash[EVP_MAX_MD_SIZE];
+    unsigned int hashLen = 0;
+    std::ifstream file(filePath, std::ios::binary);
+    if (!file.is_open()) {
+        return "";
+    }
 
-        SHA256_CTX sha256;
-        SHA256_Init(&sha256);
+    EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
+    if (!mdctx) {
+        file.close();
+        return "";
+    }
+    if (EVP_DigestInit_ex(mdctx, EVP_sha256(), nullptr) != 1) {
+        EVP_MD_CTX_free(mdctx);
+        file.close();
+        return "";
+    }
 
-        std::vector<char> buffer(4096);
-        while (file) {
-            file.read(buffer.data(), buffer.size());
-            std::streamsize count = file.gcount();
-            if (count > 0) {
-                SHA256_Update(&sha256, buffer.data(), count);
+    while (file.good()) {
+        file.read(reinterpret_cast<char*>(buffer.data()), buffer.size());
+        std::streamsize count = file.gcount();
+        if (count > 0) {
+            if (EVP_DigestUpdate(mdctx, buffer.data(), count) != 1) {
+                EVP_MD_CTX_free(mdctx);
+                file.close();
+                return "";
             }
         }
-
-        unsigned char hash[SHA256_DIGEST_LENGTH];
-        SHA256_Final(hash, &sha256);
-
-        std::stringstream ss;
-        for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-            ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(hash[i]);
-        }
-        return ss.str();
-    } catch (const std::exception& e) {
-        throw std::runtime_error(std::string("Failed to calculate checksum: ") + e.what());
     }
+
+    if (EVP_DigestFinal_ex(mdctx, hash, &hashLen) != 1) {
+        EVP_MD_CTX_free(mdctx);
+        file.close();
+        return "";
+    }
+    EVP_MD_CTX_free(mdctx);
+    file.close();
+
+    std::ostringstream oss;
+    for (unsigned int i = 0; i < hashLen; ++i) {
+        oss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+    }
+    return oss.str();
 }
 
 bool VMwareBackupProvider::backupDisk(const std::string& vmId, const std::string& diskPath, const std::string& backupPath) {

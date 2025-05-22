@@ -522,6 +522,9 @@ bool VSphereRestClient::makeRequest(const std::string& method, const std::string
         curl_slist_free_all(headers);
         return false;
     }
+
+    // This should never be reached, but added to satisfy the compiler
+    return false;
 }
 
 std::string VSphereRestClient::buildUrl(const std::string& endpoint) const {
