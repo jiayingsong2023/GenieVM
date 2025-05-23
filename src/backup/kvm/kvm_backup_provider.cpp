@@ -276,9 +276,9 @@ bool KVMBackupProvider::resumeBackup(const std::string& backupId) {
     return false;
 }
 
-BackupStatus KVMBackupProvider::getBackupStatus(const std::string& backupId) const {
+BackupStatus KVMBackupProvider::getBackupStatus(const std::string& vmId) {
     BackupStatus status;
-    auto it = backupJobs_.find(backupId);
+    auto it = backupJobs_.find(vmId);
     if (it == backupJobs_.end()) {
         status.state = BackupState::NotStarted;
         status.status = "not_found";

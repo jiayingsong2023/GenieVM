@@ -13,12 +13,13 @@
 #include <optional>
 #include <vixDiskLib.h>
 #include <unordered_map>
+#include <set>
 
 // Type definitions
 using ProgressCallback = std::function<void(int)>;
 using StatusCallback = std::function<void(const std::string&)>;
 
-class VMwareBackupProvider : public BackupProvider {
+class VMwareBackupProvider : public BackupProvider, public std::enable_shared_from_this<VMwareBackupProvider> {
 public:
     explicit VMwareBackupProvider(std::shared_ptr<VMwareConnection> connection);
     ~VMwareBackupProvider() override;
@@ -36,10 +37,10 @@ public:
 
     // Backup operations
     bool startBackup(const std::string& vmId, const BackupConfig& config) override;
-    bool cancelBackup(const std::string& backupId) override;
-    bool pauseBackup(const std::string& backupId) override;
-    bool resumeBackup(const std::string& backupId) override;
-    BackupStatus getBackupStatus(const std::string& backupId) const override;
+    bool cancelBackup(const std::string& vmId) override;
+    bool pauseBackup(const std::string& vmId) override;
+    bool resumeBackup(const std::string& vmId) override;
+    BackupStatus getBackupStatus(const std::string& vmId) override;
 
     // Restore operations
     bool startRestore(const std::string& vmId, const std::string& backupId) override;
@@ -76,6 +77,10 @@ private:
     std::unordered_map<std::string, std::shared_ptr<BackupJob>> activeOperations_;
     mutable std::mutex mutex_;
 
+    // Snapshot management
+    std::string currentSnapshotName_;
+    std::string currentVmId_;
+
     // Helper methods
     bool verifyConnection();
     void cleanupActiveOperations();
@@ -89,4 +94,9 @@ private:
     bool backupDisk(const std::string& vmId, const std::string& diskPath, const std::string& backupPath);
     bool restoreDisk(const std::string& vmId, const std::string& diskPath, const std::string& backupPath);
     bool verifyRestore(const std::string& vmId, const std::string& backupId);
+
+    // Snapshot management methods
+    bool createSnapshot(const std::string& vmId);
+    bool removeSnapshot();
+    void cleanupSnapshot();
 }; 

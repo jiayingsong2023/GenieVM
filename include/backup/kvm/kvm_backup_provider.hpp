@@ -32,10 +32,10 @@ public:
 
     // Backup operations
     bool startBackup(const std::string& vmId, const BackupConfig& config) override;
-    bool cancelBackup(const std::string& backupId) override;
-    bool pauseBackup(const std::string& backupId) override;
-    bool resumeBackup(const std::string& backupId) override;
-    BackupStatus getBackupStatus(const std::string& backupId) const override;
+    bool cancelBackup(const std::string& vmId) override;
+    bool pauseBackup(const std::string& vmId) override;
+    bool resumeBackup(const std::string& vmId) override;
+    BackupStatus getBackupStatus(const std::string& vmId) override;
 
     // Restore operations
     bool startRestore(const std::string& vmId, const std::string& backupId) override;

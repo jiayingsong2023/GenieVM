@@ -28,10 +28,10 @@ public:
 
     // Backup operations
     virtual bool startBackup(const std::string& vmId, const BackupConfig& config) = 0;
-    virtual bool cancelBackup(const std::string& backupId) = 0;
-    virtual bool pauseBackup(const std::string& backupId) = 0;
-    virtual bool resumeBackup(const std::string& backupId) = 0;
-    virtual BackupStatus getBackupStatus(const std::string& backupId) const = 0;
+    virtual bool cancelBackup(const std::string& vmId) = 0;
+    virtual bool pauseBackup(const std::string& vmId) = 0;
+    virtual bool resumeBackup(const std::string& vmId) = 0;
+    virtual BackupStatus getBackupStatus(const std::string& vmId) = 0;
 
     // Restore operations
     virtual bool startRestore(const std::string& vmId, const std::string& backupId) = 0;

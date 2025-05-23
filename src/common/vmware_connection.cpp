@@ -11,17 +11,43 @@
 using json = nlohmann::json;
 
 VMwareConnection::VMwareConnection()
-    : connected_(false), vddkConnection_(nullptr) {
+    : connected_(false), vddkConnection_(nullptr), restClient_(nullptr), refCount_(0) {
+    Logger::debug("VMwareConnection default constructor called");
 }
 
 VMwareConnection::VMwareConnection(const std::string& host, const std::string& username, const std::string& password)
-    : host_(host), username_(username), password_(password), connected_(false), vddkConnection_(nullptr) {
-    restClient_ = std::make_unique<VSphereRestClient>(host, username, password);
+    : host_(host), username_(username), password_(password), connected_(false), vddkConnection_(nullptr), restClient_(nullptr), refCount_(0) {
+    Logger::debug("VMwareConnection parameterized constructor called for host: " + host);
+    restClient_ = new VSphereRestClient(host, username, password);
 }
 
 VMwareConnection::~VMwareConnection() {
-    disconnect();
-    disconnectFromDisk();
+    Logger::debug("VMwareConnection destructor called for host: " + host_ + " - current ref count: " + std::to_string(refCount_));
+    Logger::debug("Connection state at destruction - connected: " + std::string(connected_ ? "true" : "false"));
+    
+    // Only cleanup if no active operations
+    if (refCount_ == 0) {
+        // First disconnect if still connected
+        if (connected_) {
+            Logger::debug("Disconnecting in VMwareConnection destructor for host: " + host_);
+            disconnect();
+        }
+        
+        // Then cleanup disk connection
+        Logger::debug("Cleaning up disk connection for host: " + host_);
+        disconnectFromDisk();
+        
+        // Finally cleanup REST client
+        if (restClient_) {
+            Logger::debug("Cleaning up REST client in VMwareConnection destructor for host: " + host_);
+            delete restClient_;
+            restClient_ = nullptr;
+            Logger::debug("REST client cleanup completed for host: " + host_);
+        }
+    } else {
+        Logger::info("Skipping cleanup in destructor as there are " + std::to_string(refCount_) + " active operations for host: " + host_);
+    }
+    Logger::debug("VMwareConnection destructor completed for host: " + host_);
 }
 
 bool VMwareConnection::connect(const std::string& host, const std::string& username, const std::string& password) {
@@ -33,7 +59,7 @@ bool VMwareConnection::connect(const std::string& host, const std::string& usern
     
     if (!restClient_) {
         Logger::debug("Creating new REST client instance");
-        restClient_ = std::make_unique<VSphereRestClient>(host, username, password);
+        restClient_ = new VSphereRestClient(host, username, password);
     }
     
     Logger::info("Attempting to establish connection to vCenter/ESXi");
@@ -47,14 +73,24 @@ bool VMwareConnection::connect(const std::string& host, const std::string& usern
         Logger::error("4. SSL/TLS configuration");
     } else {
         Logger::info("Successfully connected to vCenter/ESXi");
+        Logger::debug("Connection established with host: " + host + ", username: " + username);
+        Logger::debug("Current ref count after connection: " + std::to_string(refCount_));
     }
     return connected_;
 }
 
 void VMwareConnection::disconnect() {
-    if (connected_ && restClient_) {
-        restClient_->logout();
-        connected_ = false;
+    Logger::debug("Disconnect called for host: " + host_ + ", current ref count: " + std::to_string(refCount_));
+    // Only disconnect if no active operations
+    if (refCount_ == 0) {
+        if (connected_ && restClient_) {
+            Logger::debug("Logging out from VMwareConnection for host: " + host_);
+            restClient_->logout();
+            connected_ = false;
+            Logger::debug("Successfully logged out from host: " + host_);
+        }
+    } else {
+        Logger::info("Skipping disconnect as there are " + std::to_string(refCount_) + " active operations for host: " + host_);
     }
 }
 
@@ -301,5 +337,29 @@ bool VMwareConnection::verifyBackup(const std::string& backupId, nlohmann::json&
     } catch (const std::exception& e) {
         lastError_ = "Exception in verifyBackup: " + std::string(e.what());
         return false;
+    }
+}
+
+void VMwareConnection::incrementRefCount() {
+    Logger::debug("Incrementing ref count from " + std::to_string(refCount_) + " for host: " + host_);
+    refCount_++;
+    Logger::debug("Incremented ref count to " + std::to_string(refCount_));
+}
+
+void VMwareConnection::decrementRefCount() {
+    Logger::debug("Decrementing ref count from " + std::to_string(refCount_) + " for host: " + host_);
+    if (refCount_ > 0) {
+        refCount_--;
+        Logger::debug("Decremented ref count to " + std::to_string(refCount_));
+        
+        // If this was the last operation, cleanup
+        if (refCount_ == 0) {
+            Logger::debug("No more active operations, cleaning up connection for host: " + host_);
+            if (connected_) {
+                disconnect();
+            }
+        }
+    } else {
+        Logger::info("Attempted to decrement ref count below 0 for host: " + host_);
     }
 } 

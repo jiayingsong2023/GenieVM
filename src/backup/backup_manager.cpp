@@ -1,14 +1,20 @@
 #include "backup/backup_manager.hpp"
 #include "backup/backup_job.hpp"
 #include "common/logger.hpp"
+#include "backup/vmware/vmware_backup_provider.hpp"
 #include <algorithm>
 #include <stdexcept>
+#include <mutex>
 
 BackupManager::BackupManager() {
+    // Don't create provider in default constructor
 }
 
 BackupManager::BackupManager(std::shared_ptr<VMwareConnection> connection)
     : connection_(connection) {
+    if (connection_) {
+        provider_ = std::make_unique<VMwareBackupProvider>(connection_);
+    }
 }
 
 BackupManager::~BackupManager() {
@@ -56,25 +62,106 @@ bool BackupManager::removeBackupJob(const std::string& jobId) {
 }
 
 bool BackupManager::startBackup(const std::string& vmId, const BackupConfig& config) {
-    if (!provider_) {
-        lastError_ = "No provider available";
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    
+    // Initialize backup status
+    BackupStatus status;
+    status.state = BackupState::InProgress;
+    status.progress = 0.0;
+    status.status = "Starting backup...";
+    backupStatuses_[vmId] = status;
+
+    if (!provider_->startBackup(vmId, config)) {
+        status.state = BackupState::Failed;
+        status.error = provider_->getLastError();
+        backupStatuses_[vmId] = status;
         return false;
     }
 
-    auto job = createBackupJob(config);
-    if (!job) {
+    return true;
+}
+
+bool BackupManager::pauseBackup(const std::string& vmId) {
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    auto it = backupStatuses_.find(vmId);
+    if (it == backupStatuses_.end()) {
+        lastError_ = "No backup found for VM: " + vmId;
         return false;
     }
 
-    try {
-        job->start();
-        activeJobs_[job->getId()] = job;
-        return true;
-    } catch (const std::exception& e) {
-        lastError_ = "Failed to start backup job: " + std::string(e.what());
-        removeBackupJob(job->getId());
+    if (it->second.state != BackupState::InProgress) {
+        lastError_ = "Backup is not in progress";
         return false;
     }
+
+    if (!provider_->pauseBackup(vmId)) {
+        lastError_ = provider_->getLastError();
+        return false;
+    }
+
+    it->second.state = BackupState::Paused;
+    it->second.status = "Backup paused";
+    return true;
+}
+
+bool BackupManager::resumeBackup(const std::string& vmId) {
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    auto it = backupStatuses_.find(vmId);
+    if (it == backupStatuses_.find(vmId)) {
+        lastError_ = "No backup found for VM: " + vmId;
+        return false;
+    }
+
+    if (it->second.state != BackupState::Paused) {
+        lastError_ = "Backup is not paused";
+        return false;
+    }
+
+    if (!provider_->resumeBackup(vmId)) {
+        lastError_ = provider_->getLastError();
+        return false;
+    }
+
+    it->second.state = BackupState::InProgress;
+    it->second.status = "Backup resumed";
+    return true;
+}
+
+bool BackupManager::cancelBackup(const std::string& vmId) {
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    auto it = backupStatuses_.find(vmId);
+    if (it == backupStatuses_.end()) {
+        lastError_ = "No backup found for VM: " + vmId;
+        return false;
+    }
+
+    if (!provider_->cancelBackup(vmId)) {
+        lastError_ = provider_->getLastError();
+        return false;
+    }
+
+    it->second.state = BackupState::Cancelled;
+    it->second.status = "Backup cancelled";
+    return true;
+}
+
+BackupStatus BackupManager::getBackupStatus(const std::string& vmId) {
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    auto it = backupStatuses_.find(vmId);
+    if (it == backupStatuses_.end()) {
+        BackupStatus status;
+        status.state = BackupState::Failed;
+        status.error = "No backup found for VM: " + vmId;
+        return status;
+    }
+
+    // Update status from provider
+    BackupStatus providerStatus = provider_->getBackupStatus(vmId);
+    it->second.progress = providerStatus.progress;
+    it->second.status = providerStatus.status;
+    it->second.error = providerStatus.error;
+
+    return it->second;
 }
 
 bool BackupManager::getChangedBlocks(const std::string& vmId, const std::string& diskPath,

@@ -12,6 +12,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include "common/backup_status.hpp"
 
 // Type definitions
 using ProgressCallback = std::function<void(int)>;
@@ -71,6 +72,8 @@ public:
     // Error handling
     void clearLastError();
 
+    BackupStatus getBackupStatus(const std::string& vmId);
+
 private:
     std::shared_ptr<VMwareConnection> connection_;
     std::shared_ptr<VMwareBackupProvider> provider_;
@@ -80,6 +83,8 @@ private:
     StatusCallback statusCallback_;
     std::map<std::string, std::shared_ptr<BackupJob>> activeJobs_;
     mutable std::mutex mutex_;
+    std::map<std::string, BackupStatus> backupStatuses_;
+    std::mutex statusMutex_;
 
     // Helper methods
     bool createProvider(const std::string& type);

@@ -38,7 +38,9 @@ BackupCLI::BackupCLI(std::shared_ptr<VMwareConnection> connection)
 
 BackupCLI::~BackupCLI() {
     if (connection_) {
-        connection_->disconnect();
+        //Logger::debug("Disconnecting from vCenter in BackupCLI destructor");
+        //FixME
+        //connection_->disconnect();
     }
 }
 
@@ -76,6 +78,7 @@ void BackupCLI::printUsage() const {
 }
 
 void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
+    Logger::info("Starting backup command handling");
     BackupConfig config;
     std::string host, username, password;
 
@@ -89,22 +92,27 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
         } else if (arg == "-v" || arg == "--vm-name") {
             if (i + 1 < argc) {
                 config.vmId = argv[++i];
+                Logger::debug("Parsed VM ID: " + config.vmId);
             }
         } else if (arg == "-b" || arg == "--backup-dir") {
             if (i + 1 < argc) {
                 config.backupDir = argv[++i];
+                Logger::debug("Parsed backup directory: " + config.backupDir);
             }
         } else if (arg == "-s" || arg == "--server") {
             if (i + 1 < argc) {
                 host = argv[++i];
+                Logger::debug("Parsed server host: " + host);
             }
         } else if (arg == "-u" || arg == "--username") {
             if (i + 1 < argc) {
                 username = argv[++i];
+                Logger::debug("Parsed username: " + username);
             }
         } else if (arg == "-p" || arg == "--password") {
             if (i + 1 < argc) {
                 password = argv[++i];
+                Logger::debug("Parsed password: [REDACTED]");
             }
         } else if (arg == "-i" || arg == "--incremental") {
             config.incremental = true;
@@ -149,9 +157,10 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
         return;
     }
 
-    Logger::info("Starting backup process");
+    Logger::info("Starting backup process for VM: " + config.vmId);
     
     // Connect to vCenter
+    Logger::debug("Attempting to connect to vCenter at: " + host);
     if (!connection_->connect(host, username, password)) {
         Logger::error("Failed to connect to vCenter: " + connection_->getLastError());
         return;
@@ -161,18 +170,64 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
     
     try {
         // Start backup
+        Logger::debug("Calling manager_->startBackup for VM: " + config.vmId);
         if (!manager_->startBackup(config.vmId, config)) {
             Logger::error("Failed to start backup: " + manager_->getLastError());
             return;
         }
 
-        Logger::info("Backup started successfully");
+        // Monitor backup progress
+        bool backupComplete = false;
+        while (!backupComplete) {
+            // Get backup status
+            BackupStatus status = manager_->getBackupStatus(config.vmId);
+            
+            // Print progress
+            std::cout << "\rBackup Progress: " << std::fixed << std::setprecision(1) 
+                      << status.progress << "% - " << status.status << std::flush;
+
+            // Check for user input (non-blocking)
+            if (std::cin.rdbuf()->in_avail()) {
+                char cmd;
+                std::cin >> cmd;
+                if (cmd == 'p' || cmd == 'P') {
+                    // Pause backup
+                    if (manager_->pauseBackup(config.vmId)) {
+                        std::cout << "\nBackup paused. Press 'r' to resume or 'c' to cancel.\n";
+                    }
+                } else if (cmd == 'r' || cmd == 'R') {
+                    // Resume backup
+                    if (manager_->resumeBackup(config.vmId)) {
+                        std::cout << "\nBackup resumed.\n";
+                    }
+                } else if (cmd == 'c' || cmd == 'C') {
+                    // Cancel backup
+                    if (manager_->cancelBackup(config.vmId)) {
+                        std::cout << "\nBackup cancelled.\n";
+                        return;
+                    }
+                }
+            }
+
+            // Check if backup is complete
+            if (status.state == BackupState::Completed) {
+                backupComplete = true;
+                std::cout << "\nBackup completed successfully!\n";
+            } else if (status.state == BackupState::Failed) {
+                std::cout << "\nBackup failed: " << status.error << "\n";
+                return;
+            }
+
+            // Sleep briefly to prevent high CPU usage
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
+        Logger::info("Backup completed successfully for VM: " + config.vmId);
     } catch (const std::exception& e) {
         Logger::error("Error during backup: " + std::string(e.what()));
     }
 
-    // Note: Connection will be closed by BackupCLI destructor when the object is destroyed
-    // This ensures the connection remains active throughout the backup process
+    Logger::debug("Backup command handling completed");
 }
 
 void BackupCLI::handleScheduleCommand(int argc, char* argv[]) {

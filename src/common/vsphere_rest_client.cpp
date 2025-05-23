@@ -220,12 +220,7 @@ VSphereRestClient::VSphereRestClient(const std::string& host, const std::string&
 
 VSphereRestClient::~VSphereRestClient() {
     Logger::debug("Cleaning up VSphereRestClient");
-    if (isLoggedIn_ && !sessionId_.empty()) {
-        Logger::debug("Logging out before cleanup");
-        logout();
-        isLoggedIn_ = false;  // Ensure we don't try to logout again
-        sessionId_.clear();
-    }
+    // Don't automatically logout - let the owner handle that
     if (curl_) {
         curl_easy_cleanup(curl_);
         Logger::debug("CURL handle cleaned up");
@@ -313,7 +308,7 @@ bool VSphereRestClient::login() {
         if (response.contains("value")) {
             sessionId_ = response["value"];
             isLoggedIn_ = true;
-            Logger::debug("Login successful!");
+            Logger::debug("Login successful! Session ID: " + sessionId_);
             if (verbose) {
                 fclose(verbose);
             }
@@ -321,9 +316,11 @@ bool VSphereRestClient::login() {
             return true;
         } else {
             Logger::debug("Response missing session value");
+            Logger::debug("Full response: " + responseData);
         }
     } catch (const nlohmann::json::parse_error& e) {
         Logger::debug("JSON parse error: " + std::string(e.what()));
+        Logger::debug("Raw response: " + responseData);
     }
     
     Logger::debug("Request failed with status code: " + std::to_string(httpCode));
@@ -447,7 +444,9 @@ bool VSphereRestClient::makeRequest(const std::string& method, const std::string
     if (!sessionId_.empty()) {
         std::string sessionHeader = "vmware-api-session-id: " + sessionId_;
         headers = curl_slist_append(headers, sessionHeader.c_str());
-        Logger::debug("Added session ID to request");
+        Logger::debug("Added session ID to request: " + sessionId_);
+    } else {
+        Logger::warning("No session ID available for request");
     }
 
     curl_easy_setopt(curl_, CURLOPT_URL, url.c_str());
@@ -506,6 +505,20 @@ bool VSphereRestClient::makeRequest(const std::string& method, const std::string
     Logger::debug("Response code: " + std::to_string(httpCode));
     Logger::debug("Response body: " + responseData);
 
+    // Handle session expiration (401 Unauthorized)
+    if (httpCode == 401 && isLoggedIn_) {
+        Logger::debug("Session expired, attempting to refresh");
+        if (refreshSession()) {
+            // Retry the request with the new session
+            curl_slist_free_all(headers);
+            return makeRequest(method, endpoint, data, response);
+        } else {
+            Logger::error("Failed to refresh session");
+            curl_slist_free_all(headers);
+            return false;
+        }
+    }
+
     if (httpCode >= 200 && httpCode < 300) {
         try {
             response = nlohmann::json::parse(responseData);
@@ -552,7 +565,46 @@ void VSphereRestClient::handleError(const std::string& operation, const nlohmann
 }
 
 bool VSphereRestClient::getVMInfo(const std::string& vmId, nlohmann::json& vmInfo) {
-    return makeRequest("GET", "/rest/vcenter/vm/" + vmId, nlohmann::json(), vmInfo);
+    // Use filter.names in the URL query string
+    std::string endpoint = "/rest/vcenter/vm?filter.names=" + vmId;
+    nlohmann::json response;
+
+    // Set up verbose logging for CURL
+    curl_easy_setopt(curl_, CURLOPT_VERBOSE, 1L);
+    FILE* verbose = fopen("/tmp/curl_verbose.log", "a");
+    if (verbose) {
+        fprintf(verbose, "\n=== VM Info Request ===\n");
+        fprintf(verbose, "URL: https://%s%s\n", host_.c_str(), endpoint.c_str());
+        fprintf(verbose, "Method: GET\n");
+        fprintf(verbose, "Headers:\n");
+        fprintf(verbose, "  Content-Type: application/json\n");
+        fprintf(verbose, "  Accept: application/json\n");
+        if (!sessionId_.empty()) {
+            fprintf(verbose, "  vmware-api-session-id: %s\n", sessionId_.c_str());
+        }
+        curl_easy_setopt(curl_, CURLOPT_STDERR, verbose);
+    }
+
+    // Explicitly set GET method and ensure it's not overridden
+    curl_easy_setopt(curl_, CURLOPT_HTTPGET, 1L);
+    curl_easy_setopt(curl_, CURLOPT_CUSTOMREQUEST, "GET");
+
+    bool success = makeRequest("GET", endpoint, nlohmann::json(), response);
+
+    if (verbose) {
+        fprintf(verbose, "\nResponse Code: %d\n", success ? 200 : 400);
+        fprintf(verbose, "Response Body: %s\n", response.dump().c_str());
+        fclose(verbose);
+    }
+
+    // The response should contain the VM info directly
+    if (response.contains("value") && !response["value"].empty()) {
+        vmInfo = response["value"][0];  // Get the first (and should be only) VM
+        return true;
+    }
+
+    Logger::error("VM not found: " + vmId);
+    return false;
 }
 
 bool VSphereRestClient::getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) {
@@ -1176,20 +1228,27 @@ bool VSphereRestClient::getBackup(const std::string& backupId, std::string& resp
 
 bool VSphereRestClient::refreshSession() {
     if (!isLoggedIn_) {
+        Logger::debug("Cannot refresh session: not logged in");
         return false;
     }
     
+    Logger::debug("Attempting to refresh session");
     nlohmann::json response;
     if (makeRequest("POST", "/rest/com/vmware/cis/session/refresh", nlohmann::json(), response)) {
         try {
+            std::string oldSessionId = sessionId_;
             sessionId_ = response["value"].get<std::string>();
             Logger::debug("Successfully refreshed session");
+            Logger::debug("Old session ID: " + oldSessionId);
+            Logger::debug("New session ID: " + sessionId_);
             return true;
         } catch (const std::exception& e) {
             Logger::error("Failed to parse session refresh response: " + std::string(e.what()));
+            Logger::debug("Raw response: " + response.dump());
             return false;
         }
     }
+    Logger::error("Failed to refresh session");
     return false;
 }
 

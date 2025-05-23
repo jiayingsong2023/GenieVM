@@ -21,6 +21,13 @@ public:
     bool isConnected() const;
     std::string getLastError() const;
 
+    // Reference counting for active operations
+    void incrementRefCount();
+    void decrementRefCount();
+
+    // Add method to get REST client
+    VSphereRestClient* getRestClient() const { return restClient_; }
+
     // VDDK operations
     VixDiskLibConnection getVDDKConnection() const;
     void disconnectFromDisk();
@@ -54,5 +61,6 @@ private:
     bool connected_;
     VixDiskLibConnection vddkConnection_;
     std::string lastError_;
-    std::unique_ptr<VSphereRestClient> restClient_;
+    VSphereRestClient* restClient_;
+    int refCount_;  // Track number of active operations
 }; 

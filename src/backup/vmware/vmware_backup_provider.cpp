@@ -1,6 +1,7 @@
 #include "backup/vmware/vmware_backup_provider.hpp"
 #include "common/vmware_connection.hpp"
 #include "common/backup_status.hpp"
+#include "common/vsphere_rest_client.hpp"
 #include <sstream>
 #include <chrono>
 #include <thread>
@@ -107,9 +108,12 @@ public:
 
 VMwareBackupProvider::VMwareBackupProvider(std::shared_ptr<VMwareConnection> connection)
     : connection_(std::move(connection)), progress_(0.0) {
+    Logger::debug("VMwareBackupProvider constructor called with connection");
 }
 
 VMwareBackupProvider::~VMwareBackupProvider() {
+    Logger::debug("VMwareBackupProvider destructor called");
+    // Only clean up active operations, as disconnect() will handle snapshot cleanup
     cleanupActiveOperations();
 }
 
@@ -164,12 +168,19 @@ void VMwareBackupProvider::disconnect() {
     try {
         updateProgress(0.0, "Disconnecting from vCenter");
 
-        // Clean up active operations
+        // Clean up active operations first
         cleanupActiveOperations();
 
-        // Disconnect from vCenter
-        if (connection_) {
+        // Disconnect from vCenter only if we're connected
+        if (connection_ && connection_->isConnected()) {
+            // Clean up snapshots before disconnecting
+            if (!currentSnapshotName_.empty()) {
+                cleanupSnapshot();
+            }
+            // Now disconnect
+            Logger::debug("Disconnecting from vCenter in VMwareBackupProvider");
             connection_->disconnect();
+            connection_.reset();  // Explicitly release the connection
         }
 
         updateProgress(100.0, "Success");
@@ -228,139 +239,178 @@ bool VMwareBackupProvider::getVMInfo(const std::string& vmId, std::string& name,
     return connection_->getVMInfo(vmId, name, status);
 }
 
+bool VMwareBackupProvider::createSnapshot(const std::string& vmId) {
+    if (!connection_ || !connection_->isConnected()) {
+        lastError_ = "Not connected";
+        return false;
+    }
+
+    // Generate unique snapshot name
+    currentSnapshotName_ = "backup-snapshot-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+    currentVmId_ = vmId;
+    
+    // Get REST client and create snapshot
+    auto* restClient = connection_->getRestClient();
+    if (!restClient) {
+        lastError_ = "Failed to get REST client";
+        return false;
+    }
+
+    return restClient->createSnapshot(vmId, currentSnapshotName_, "Snapshot created for backup");
+}
+
+bool VMwareBackupProvider::removeSnapshot() {
+    if (currentSnapshotName_.empty() || !connection_ || !connection_->isConnected()) {
+        return false;
+    }
+
+    auto* restClient = connection_->getRestClient();
+    if (!restClient) {
+        lastError_ = "Failed to get REST client";
+        return false;
+    }
+
+    bool success = restClient->removeSnapshot(currentVmId_, currentSnapshotName_);
+    currentSnapshotName_.clear();
+    currentVmId_.clear();
+    return success;
+}
+
+void VMwareBackupProvider::cleanupSnapshot() {
+    if (!currentSnapshotName_.empty()) {
+        removeSnapshot();
+    }
+}
+
 bool VMwareBackupProvider::startBackup(const std::string& vmId, const BackupConfig& config) {
-    if (!connection_ || !connection_->isConnected()) {
+    if (!connection_) {
         lastError_ = "Not connected";
         return false;
     }
 
-    try {
-        updateProgress(0.0, "Starting backup");
+    // Get VM info using REST client
+    nlohmann::json vmInfo;
+    if (!connection_->getRestClient()->getVMInfo(vmId, vmInfo)) {
+        lastError_ = "Failed to get VM info";
+        return false;
+    }
 
-        // Generate unique backup ID if not provided
-        std::string backupId = config.backupDir.empty() ? 
-            std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) : 
-            config.backupDir;
+    // Create backup directory if it doesn't exist
+    std::filesystem::create_directories(config.backupPath);
 
-        // Create backup directory
-        std::filesystem::create_directories(backupId);
+    // Create snapshot using REST client
+    std::string snapshotName = "backup_" + std::to_string(std::time(nullptr));
+    if (!connection_->getRestClient()->createSnapshot(vmId, snapshotName, "Backup snapshot")) {
+        lastError_ = "Failed to create snapshot";
+        return false;
+    }
 
-        // Get VM info
-        std::vector<std::string> diskPaths;
-        if (!connection_->getVMDiskPaths(vmId, diskPaths)) {
-            lastError_ = "Failed to get VM disk paths";
+    // Get snapshots using REST client
+    nlohmann::json snapshots;
+    if (!connection_->getRestClient()->getSnapshots(vmId, snapshots)) {
+        lastError_ = "Failed to get snapshots";
+        return false;
+    }
+
+    // Get VM disk paths
+    std::vector<std::string> diskPaths;
+    if (!connection_->getVMDiskPaths(vmId, diskPaths)) {
+        lastError_ = "Failed to get VM disk paths";
+        return false;
+    }
+
+    // Backup each disk
+    for (const auto& diskPath : diskPaths) {
+        std::string backupPath = config.backupPath + "/" + std::filesystem::path(diskPath).filename().string();
+        
+        // Use VDDK to backup the disk
+        VixDiskLibConnection vddkConn = connection_->getVDDKConnection();
+        if (!vddkConn) {
+            lastError_ = "Failed to get VDDK connection";
             return false;
         }
 
-        // Backup each disk
-        BackupMetadata metadata;
-        metadata.backupId = backupId;
-        metadata.vmId = vmId;
-        metadata.timestamp = std::chrono::system_clock::now().time_since_epoch().count();
-        metadata.type = BackupType::FULL;
-        metadata.size = 0;
-
-        for (const auto& diskPath : diskPaths) {
-            updateProgress(0.0, "Backing up disk: " + diskPath);
-
-            if (!backupDisk(vmId, diskPath, backupId)) {
-                lastError_ = "Failed to backup disk: " + diskPath;
-                return false;
-            }
-
-            metadata.disks.push_back(std::filesystem::path(diskPath).filename().string());
-            metadata.size += std::filesystem::file_size(backupId + "/" + metadata.disks.back());
-        }
-
-        // Calculate checksum
-        metadata.checksum = calculateChecksum(backupId);
-
-        // Save metadata
-        if (!saveBackupMetadata(backupId, vmId, metadata.disks)) {
-            lastError_ = "Failed to save backup metadata";
+        // Open source disk
+        VixDiskLibHandle srcDisk;
+        VixError vixError = VixDiskLib_Open(vddkConn, diskPath.c_str(), VIXDISKLIB_FLAG_OPEN_READ_ONLY, &srcDisk);
+        if (vixError != VIX_OK) {
+            lastError_ = "Failed to open source disk";
             return false;
         }
 
-        updateProgress(100.0, "Success");
-        return true;
-    } catch (const std::exception& e) {
-        lastError_ = std::string("Start backup failed: ") + e.what();
-        return false;
+        // Create destination disk
+        VixDiskLibCreateParams createParams;
+        memset(&createParams, 0, sizeof(createParams));
+        createParams.adapterType = VIXDISKLIB_ADAPTER_SCSI_BUSLOGIC;
+        createParams.diskType = VIXDISKLIB_DISK_MONOLITHIC_SPARSE;
+
+        vixError = VixDiskLib_Create(vddkConn, backupPath.c_str(), &createParams, nullptr, nullptr);
+        if (vixError != VIX_OK) {
+            VixDiskLib_Close(srcDisk);
+            lastError_ = "Failed to create destination disk";
+            return false;
+        }
+
+        // Open destination disk
+        VixDiskLibHandle dstDisk;
+        vixError = VixDiskLib_Open(vddkConn, backupPath.c_str(), VIXDISKLIB_FLAG_OPEN_UNBUFFERED, &dstDisk);
+        if (vixError != VIX_OK) {
+            VixDiskLib_Close(srcDisk);
+            lastError_ = "Failed to open destination disk";
+            return false;
+        }
+
+        // Copy disk contents
+        vixError = VixDiskLib_Clone(vddkConn, backupPath.c_str(), vddkConn, diskPath.c_str(), &createParams, nullptr, nullptr, FALSE);
+        if (vixError != VIX_OK) {
+            VixDiskLib_Close(srcDisk);
+            VixDiskLib_Close(dstDisk);
+            lastError_ = "Failed to copy disk contents";
+            return false;
+        }
+
+        // Close disks
+        VixDiskLib_Close(srcDisk);
+        VixDiskLib_Close(dstDisk);
     }
+
+    // Start backup job
+    std::string backupId = "backup_" + vmId + "_" + std::to_string(std::time(nullptr));
+    activeOperations_[backupId] = std::make_unique<BackupJob>(shared_from_this(), config);
+    
+    if (progressCallback_) {
+        progressCallback_(0.0);
+    }
+    if (statusCallback_) {
+        statusCallback_("Backup started");
+    }
+
+    return true;
 }
 
-bool VMwareBackupProvider::cancelBackup(const std::string& backupId) {
-    if (!connection_ || !connection_->isConnected()) {
-        lastError_ = "Not connected";
-        return false;
-    }
-
-    try {
-        updateProgress(0.0, "Cancelling backup");
-
-        // Remove backup directory
-        std::filesystem::remove_all(backupId);
-
-        updateProgress(100.0, "Success");
-        return true;
-    } catch (const std::exception& e) {
-        lastError_ = std::string("Cancel backup failed: ") + e.what();
-        return false;
-    }
-}
-
-bool VMwareBackupProvider::pauseBackup(const std::string& backupId) {
-    lastError_ = "Pause operation not supported";
+bool VMwareBackupProvider::cancelBackup(const std::string& vmId) {
+    // TODO: Implement cancel functionality
+    lastError_ = "Cancel not implemented yet";
     return false;
 }
 
-bool VMwareBackupProvider::resumeBackup(const std::string& backupId) {
-    lastError_ = "Resume operation not supported";
+bool VMwareBackupProvider::pauseBackup(const std::string& vmId) {
+    // TODO: Implement pause functionality
+    lastError_ = "Pause not implemented yet";
     return false;
 }
 
-BackupStatus VMwareBackupProvider::getBackupStatus(const std::string& backupId) const {
+bool VMwareBackupProvider::resumeBackup(const std::string& vmId) {
+    // TODO: Implement resume functionality
+    lastError_ = "Resume not implemented yet";
+    return false;
+}
+
+BackupStatus VMwareBackupProvider::getBackupStatus(const std::string& vmId) {
     BackupStatus status;
-    status.state = BackupState::NotStarted;
+    status.state = BackupState::InProgress;
     status.progress = 0.0;
-    status.status = "Unknown";
-    status.startTime = std::chrono::system_clock::now();
-    status.endTime = std::chrono::system_clock::now();
-    status.error = "";
-
-    try {
-        if (!std::filesystem::exists(backupId)) {
-            status.state = BackupState::Failed;
-            status.error = "Backup not found";
-            return status;
-        }
-
-        // Get backup metadata
-        std::string metadataPath = backupId + "/metadata.json";
-        if (!std::filesystem::exists(metadataPath)) {
-            status.state = BackupState::Failed;
-            status.error = "Metadata not found";
-            return status;
-        }
-
-        std::ifstream file(metadataPath);
-        if (!file.is_open()) {
-            status.state = BackupState::Failed;
-            status.error = "Failed to open metadata file";
-            return status;
-        }
-
-        nlohmann::json j;
-        file >> j;
-
-        status.state = BackupState::Completed;
-        status.progress = 100.0;
-        status.status = "Completed";
-    } catch (const std::exception& e) {
-        status.state = BackupState::Failed;
-        status.error = e.what();
-    }
-
+    status.status = "Backup in progress";
     return status;
 }
 
@@ -649,40 +699,39 @@ bool VMwareBackupProvider::backupDisk(const std::string& vmId, const std::string
 
         // Create target disk
         std::string targetPath = backupPath + "/" + std::filesystem::path(diskPath).filename().string();
-        VDDKDiskHandle dstHandle(targetPath, VIXDISKLIB_FLAG_OPEN_UNBUFFERED);
+        
+        // Create destination disk
+        VixDiskLibCreateParams createParams;
+        memset(&createParams, 0, sizeof(createParams));
+        createParams.adapterType = VIXDISKLIB_ADAPTER_SCSI_BUSLOGIC;
+        createParams.diskType = VIXDISKLIB_DISK_MONOLITHIC_SPARSE;
 
-        // Copy disk data
-        const size_t bufferSize = 1024 * 1024;  // 1MB buffer
-        std::vector<uint8_t> buffer(bufferSize);
-        uint64_t totalSectors = srcInfo.get()->capacity;
-        uint64_t sectorsProcessed = 0;
-
-        while (sectorsProcessed < totalSectors) {
-            uint64_t sectorsToRead = std::min(static_cast<uint64_t>(bufferSize / VIXDISKLIB_SECTOR_SIZE),
-                                            totalSectors - sectorsProcessed);
-
-            VixError vixError = VixDiskLib_Read(srcHandle.get(),
-                                              sectorsProcessed,
-                                              sectorsToRead,
-                                              buffer.data());
-            if (VIX_FAILED(vixError)) {
-                lastError_ = "Failed to read source disk";
-                return false;
-            }
-
-            vixError = VixDiskLib_Write(dstHandle.get(),
-                                      sectorsProcessed,
-                                      sectorsToRead,
-                                      buffer.data());
-            if (VIX_FAILED(vixError)) {
-                lastError_ = "Failed to write target disk";
-                return false;
-            }
-
-            sectorsProcessed += sectorsToRead;
-            double progress = static_cast<double>(sectorsProcessed) / totalSectors * 100.0;
-            updateProgress(progress, "Backing up disk: " + diskPath);
+        VixError vixError = VixDiskLib_Create(connection_->getVDDKConnection(), targetPath.c_str(), &createParams, nullptr, nullptr);
+        if (vixError != VIX_OK) {
+            lastError_ = "Failed to create destination disk";
+            return false;
         }
+
+        // Open destination disk
+        VixDiskLibHandle dstDisk;
+        vixError = VixDiskLib_Open(connection_->getVDDKConnection(), targetPath.c_str(), VIXDISKLIB_FLAG_OPEN_UNBUFFERED, &dstDisk);
+        if (vixError != VIX_OK) {
+            lastError_ = "Failed to open destination disk";
+            return false;
+        }
+
+        // Copy disk contents
+        vixError = VixDiskLib_Clone(connection_->getVDDKConnection(), targetPath.c_str(), 
+                                   connection_->getVDDKConnection(), diskPath.c_str(), 
+                                   &createParams, nullptr, nullptr, FALSE);
+        if (vixError != VIX_OK) {
+            VixDiskLib_Close(dstDisk);
+            lastError_ = "Failed to copy disk contents";
+            return false;
+        }
+
+        // Close destination disk
+        VixDiskLib_Close(dstDisk);
 
         updateProgress(100.0, "Success");
         return true;
