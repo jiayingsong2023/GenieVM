@@ -1,5 +1,5 @@
 #include "backup/backup_cli.hpp"
-#include "backup/backup_manager.hpp"
+#include "backup/job_manager.hpp"
 #include "backup/backup_scheduler.hpp"
 #include "backup/backup_verifier.hpp"
 #include "backup/backup_job.hpp"
@@ -7,6 +7,7 @@
 #include "common/logger.hpp"
 #include "common/vmware_connection.hpp"
 #include "main/backup_main.hpp"
+#include "common/backup_status.hpp"
 #include <iostream>
 #include <iomanip>
 #include <ctime>
@@ -22,25 +23,16 @@
 
 using json = nlohmann::json;
 
-BackupCLI::BackupCLI(std::shared_ptr<VMwareConnection> connection)
-    : connection_(connection) {
-    // Create backup manager
-    manager_ = std::make_shared<BackupManager>(connection);
-    
-    // Create scheduler
-    scheduler_ = std::make_shared<BackupScheduler>(manager_);
-    
-    // Initialize scheduler
-    if (!scheduler_->initialize()) {
-        throw std::runtime_error("Failed to initialize backup scheduler");
-    }
+BackupCLI::BackupCLI(std::shared_ptr<JobManager> jobManager,
+                     std::shared_ptr<BackupProvider> provider)
+    : jobManager_(jobManager)
+    , provider_(provider)
+    , scheduler_(std::make_shared<BackupScheduler>(jobManager, provider)) {
 }
 
 BackupCLI::~BackupCLI() {
     if (connection_) {
-        //Logger::debug("Disconnecting from vCenter in BackupCLI destructor");
-        //FixME
-        //connection_->disconnect();
+        connection_->disconnect();
     }
 }
 
@@ -51,7 +43,7 @@ void BackupCLI::run(int argc, char* argv[]) {
     }
 
     // The first argument should be the command
-    std::string command = argv[0];
+    std::string command = argv[1];
 
     // Shift arguments to the left by one position
     for (int i = 0; i < argc - 1; i++) {
@@ -67,6 +59,8 @@ void BackupCLI::run(int argc, char* argv[]) {
         handleListCommand(argc, argv);
     } else if (command == "verify") {
         handleVerifyCommand(argc, argv);
+    } else if (command == "restore") {
+        handleRestoreCommand(argc, argv);
     } else {
         printUsage();
     }
@@ -85,7 +79,6 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
     // Parse command line arguments
     for (int i = 0; i < argc; i++) {
         std::string arg = argv[i];
-        
         if (arg == "-h" || arg == "--help") {
             printBackupUsage();
             return;
@@ -120,15 +113,15 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
             if (i + 1 < argc) {
                 std::string timeStr = argv[++i];
                 config.scheduleType = "once";
-                config.schedule.hour = std::stoi(timeStr.substr(11, 2));
-                config.schedule.minute = std::stoi(timeStr.substr(14, 2));
+                config.schedule.hour = std::stoi(timeStr.substr(0, 2));
+                config.schedule.minute = std::stoi(timeStr.substr(3, 2));
             }
         } else if (arg == "--interval") {
             if (i + 1 < argc) {
                 config.scheduleType = "interval";
-                // Store interval in minutes in the hour field
-                config.schedule.hour = std::stoi(argv[++i]) / 60;
-                config.schedule.minute = std::stoi(argv[i]) % 60;
+                int minutes = std::stoi(argv[++i]);
+                config.schedule.hour = minutes / 60;
+                config.schedule.minute = minutes % 60;
             }
         } else if (arg == "--parallel") {
             if (i + 1 < argc) config.maxConcurrentDisks = std::stoi(argv[++i]);
@@ -161,180 +154,320 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
     
     // Connect to vCenter
     Logger::debug("Attempting to connect to vCenter at: " + host);
-    if (!connection_->connect(host, username, password)) {
-        Logger::error("Failed to connect to vCenter: " + connection_->getLastError());
+    if (!jobManager_->connect(host, username, password)) {
+        Logger::error("Failed to connect to vCenter: " + jobManager_->getLastError());
         return;
     }
 
     Logger::info("Successfully connected to vCenter");
     
     try {
-        // Start backup
-        Logger::debug("Calling manager_->startBackup for VM: " + config.vmId);
-        if (!manager_->startBackup(config.vmId, config)) {
-            Logger::error("Failed to start backup: " + manager_->getLastError());
+        // Create and start backup job
+        auto job = jobManager_->createBackupJob(config);
+        if (!job) {
+            Logger::error("Failed to create backup job: " + jobManager_->getLastError());
             return;
         }
 
-        // Monitor backup progress
-        bool backupComplete = false;
-        while (!backupComplete) {
-            // Get backup status
-            BackupStatus status = manager_->getBackupStatus(config.vmId);
-            
-            // Print progress
-            std::cout << "\rBackup Progress: " << std::fixed << std::setprecision(1) 
-                      << status.progress << "% - " << status.status << std::flush;
+        // Set up progress callback
+        job->setProgressCallback([](int progress) {
+            std::cout << "\rProgress: " << progress << "%" << std::flush;
+        });
 
-            // Check for user input (non-blocking)
-            if (std::cin.rdbuf()->in_avail()) {
-                char cmd;
-                std::cin >> cmd;
-                if (cmd == 'p' || cmd == 'P') {
-                    // Pause backup
-                    if (manager_->pauseBackup(config.vmId)) {
-                        std::cout << "\nBackup paused. Press 'r' to resume or 'c' to cancel.\n";
-                    }
-                } else if (cmd == 'r' || cmd == 'R') {
-                    // Resume backup
-                    if (manager_->resumeBackup(config.vmId)) {
-                        std::cout << "\nBackup resumed.\n";
-                    }
-                } else if (cmd == 'c' || cmd == 'C') {
-                    // Cancel backup
-                    if (manager_->cancelBackup(config.vmId)) {
-                        std::cout << "\nBackup cancelled.\n";
-                        return;
-                    }
-                }
-            }
+        // Set up status callback
+        job->setStatusCallback([](const std::string& status) {
+            std::cout << "\nStatus: " << status << std::endl;
+        });
 
-            // Check if backup is complete
-            if (status.state == BackupState::Completed) {
-                backupComplete = true;
-                std::cout << "\nBackup completed successfully!\n";
-            } else if (status.state == BackupState::Failed) {
-                std::cout << "\nBackup failed: " << status.error << "\n";
-                return;
-            }
+        // Start the job
+        if (!job->start()) {
+            Logger::error("Failed to start backup job: " + job->getError());
+            return;
+        }
 
-            // Sleep briefly to prevent high CPU usage
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // Wait for job completion
+        while (job->isRunning()) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+
+        // Print final status
+        std::cout << "\nBackup job " << (job->isCompleted() ? "completed successfully" : "failed") << std::endl;
+        if (!job->isCompleted()) {
+            Logger::error("Error: " + job->getError());
         }
 
         Logger::info("Backup completed successfully for VM: " + config.vmId);
     } catch (const std::exception& e) {
-        Logger::error("Error during backup: " + std::string(e.what()));
+        Logger::error("Unexpected error: " + std::string(e.what()));
     }
-
-    Logger::debug("Backup command handling completed");
 }
 
-void BackupCLI::handleScheduleCommand(int argc, char* argv[]) {
-    if (argc < 2 || (argc == 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help"))) {
-        printBackupUsage();
-        return;
-    }
-
-    std::string host = argv[2];
-    std::string username = argv[3];
-    std::string password = argv[4];
-    std::string schedule = argv[5];
-
-    connection_ = std::make_shared<VMwareConnection>();
-    if (!connection_->connect(host, username, password)) {
-        std::cerr << "Failed to connect to vCenter\n";
+void BackupCLI::handleScheduleCommand(int argc, char** argv) {
+    if (argc < 3) {
+        printUsage();
         return;
     }
 
     BackupConfig config;
-    parseBackupOptions(argc, argv, config);
-    
-    // Parse schedule string (format: "daily|weekly|monthly HH:MM [day]")
-    std::istringstream ss(schedule);
-    std::string type, time;
-    ss >> type >> time;
-    
-    config.scheduleType = type;
-    
-    // Parse time
-    std::istringstream time_ss(time);
-    std::string hour_str, minute_str;
-    std::getline(time_ss, hour_str, ':');
-    std::getline(time_ss, minute_str, ':');
-    config.schedule.hour = std::stoi(hour_str);
-    config.schedule.minute = std::stoi(minute_str);
-    
-    // Parse day if provided
-    if (ss >> config.schedule.day) {
-        // Day was provided
+    config.vmId = argv[2];
+    config.scheduleType = "daily";  // Default to daily
+    config.schedule.hour = 0;
+    config.schedule.minute = 0;
+
+    // Parse schedule options
+    for (int i = 3; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--type") {
+            if (i + 1 < argc) {
+                config.scheduleType = argv[++i];
+            }
+        } else if (arg == "--time") {
+            if (i + 1 < argc) {
+                std::string time = argv[++i];
+                size_t pos = time.find(':');
+                if (pos != std::string::npos) {
+                    config.schedule.hour = std::stoi(time.substr(0, pos));
+                    config.schedule.minute = std::stoi(time.substr(pos + 1));
+                }
+            }
+        } else if (arg == "--day") {
+            if (i + 1 < argc) {
+                config.schedule.day = std::stoi(argv[++i]);
+            }
+        }
+    }
+
+    if (scheduler_->scheduleBackup(config.vmId, config)) {
+        auto nextRunTime = scheduler_->getNextRunTime(config);
+        std::cout << "Backup scheduled successfully\n";
+        std::cout << "Next run: " << formatTime(std::chrono::system_clock::to_time_t(nextRunTime)) << "\n";
     } else {
-        // Default day based on schedule type
-        if (type == "weekly") {
-            config.schedule.day = 1;  // Monday
-        } else if (type == "monthly") {
-            config.schedule.day = 1;  // First day of month
-        }
-    }
-
-    scheduler_->addSchedule(config.vmId, config);
-    auto nextRunTime = scheduler_->getNextRunTime(config.vmId);
-    std::cout << "Next backup scheduled for: " << this->formatTime(std::chrono::system_clock::to_time_t(nextRunTime)) << std::endl;
-}
-
-void BackupCLI::handleListCommand(int argc, char* argv[]) {
-    if (argc < 2 || (argc == 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help"))) {
-        printBackupUsage();
-        return;
-    }
-
-    std::string host = argv[2];
-    std::string username = argv[3];
-    std::string password = argv[4];
-
-    connection_ = std::make_shared<VMwareConnection>();
-    if (!connection_->connect(host, username, password)) {
-        std::cerr << "Failed to connect to vCenter\n";
-        return;
-    }
-
-    std::vector<std::pair<std::string, BackupConfig>> schedules;
-    scheduler_->getAllSchedules(schedules);
-    for (const auto& [vmId, config] : schedules) {
-        std::cout << "VM: " << vmId << "\n";
-        std::cout << "Schedule Type: " << config.scheduleType << "\n";
-        std::cout << "Schedule Time: " << config.schedule.hour << ":" << config.schedule.minute << "\n";
-        if (config.scheduleType == "weekly") {
-            std::cout << "Day of Week: " << config.schedule.day << "\n";
-        } else if (config.scheduleType == "monthly") {
-            std::cout << "Day of Month: " << config.schedule.day << "\n";
-        }
-        std::cout << "Next run: " << this->formatTime(std::chrono::system_clock::to_time_t(scheduler_->getNextRunTime(vmId))) << "\n\n";
+        std::cerr << "Failed to schedule backup\n";
     }
 }
 
-void BackupCLI::handleVerifyCommand(int argc, char* argv[]) {
-    if (argc < 2 || (argc == 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help"))) {
-        printBackupUsage();
-        return;
-    }
-
-    std::string host = argv[2];
-    std::string username = argv[3];
-    std::string password = argv[4];
-
-    connection_ = std::make_shared<VMwareConnection>();
-    if (!connection_->connect(host, username, password)) {
-        std::cerr << "Failed to connect to vCenter\n";
-        return;
-    }
-
-    BackupConfig config;
-    parseBackupOptions(argc, argv, config);
+void BackupCLI::handleListCommand(int argc, char** argv) {
+    auto schedules = scheduler_->getScheduledBackups();
     
-    auto provider = std::make_shared<VMwareBackupProvider>(connection_);
-    auto job = std::make_shared<BackupJob>(provider, config);
-    job->verifyBackup();
+    if (schedules.empty()) {
+        std::cout << "No scheduled backups\n";
+        return;
+    }
+
+    for (const auto& config : schedules) {
+        std::cout << "VM ID: " << config.vmId << "\n";
+        std::cout << "Schedule Type: " << config.scheduleType << "\n";
+        std::cout << "Time: " << config.schedule.hour << ":" << config.schedule.minute << "\n";
+        if (config.scheduleType == "weekly" || config.scheduleType == "monthly") {
+            std::cout << "Day: " << config.schedule.day << "\n";
+        }
+        std::cout << "Next run: " << formatTime(std::chrono::system_clock::to_time_t(scheduler_->getNextRunTime(config))) << "\n\n";
+    }
+}
+
+bool BackupCLI::handleVerifyCommand(int argc, char* argv[]) {
+    Logger::info("Starting verify command handling");
+    VerifyConfig config;
+    std::string host, username, password;
+
+    // Parse command line arguments
+    for (int i = 0; i < argc; i++) {
+        std::string arg = argv[i];
+        
+        if (arg == "-h" || arg == "--help") {
+            printUsage();
+            return false;
+        } else if (arg == "-b" || arg == "--backup-id") {
+            if (i + 1 < argc) {
+                config.backupId = argv[++i];
+                Logger::debug("Parsed backup ID: " + config.backupId);
+            }
+        } else if (arg == "-s" || arg == "--server") {
+            if (i + 1 < argc) {
+                host = argv[++i];
+                Logger::debug("Parsed server host: " + host);
+            }
+        } else if (arg == "-u" || arg == "--username") {
+            if (i + 1 < argc) {
+                username = argv[++i];
+                Logger::debug("Parsed username: " + username);
+            }
+        } else if (arg == "-p" || arg == "--password") {
+            if (i + 1 < argc) {
+                password = argv[++i];
+                Logger::debug("Parsed password: [REDACTED]");
+            }
+        } else if (arg == "--parallel") {
+            if (i + 1 < argc) config.maxConcurrentDisks = std::stoi(argv[++i]);
+        }
+    }
+
+    // Validate required parameters
+    if (config.backupId.empty() || host.empty() || username.empty() || password.empty()) {
+        Logger::error("Missing required parameters");
+        printUsage();
+        return false;
+    }
+
+    Logger::info("Starting verify process for backup: " + config.backupId);
+    
+    // Connect to vCenter
+    Logger::debug("Attempting to connect to vCenter at: " + host);
+    if (!jobManager_->connect(host, username, password)) {
+        Logger::error("Failed to connect to vCenter: " + jobManager_->getLastError());
+        return false;
+    }
+
+    Logger::info("Successfully connected to vCenter");
+    
+    try {
+        // Create and start verify job
+        auto job = jobManager_->createVerifyJob(config);
+        if (!job) {
+            Logger::error("Failed to create verify job: " + jobManager_->getLastError());
+            return false;
+        }
+
+        // Set up progress callback
+        job->setProgressCallback([](int progress) {
+            std::cout << "\rProgress: " << progress << "%" << std::flush;
+        });
+
+        // Set up status callback
+        job->setStatusCallback([](const std::string& status) {
+            std::cout << "\nStatus: " << status << std::endl;
+        });
+
+        // Start the job
+        if (!job->start()) {
+            Logger::error("Failed to start verify job: " + job->getError());
+            return false;
+        }
+
+        // Wait for job completion
+        while (job->isRunning()) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+
+        // Print final status
+        std::cout << "\nVerify job " << (job->isCompleted() ? "completed successfully" : "failed") << std::endl;
+        if (!job->isCompleted()) {
+            Logger::error("Error: " + job->getError());
+            return false;
+        }
+
+        Logger::info("Verify completed successfully for backup: " + config.backupId);
+        return true;
+    } catch (const std::exception& e) {
+        Logger::error("Error during verify: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool BackupCLI::handleRestoreCommand(int argc, char* argv[]) {
+    Logger::info("Starting restore command handling");
+    RestoreConfig config;
+    std::string host, username, password;
+
+    // Parse command line arguments
+    for (int i = 0; i < argc; i++) {
+        std::string arg = argv[i];
+        
+        if (arg == "-h" || arg == "--help") {
+            printUsage();
+            return false;
+        } else if (arg == "-v" || arg == "--vm-name") {
+            if (i + 1 < argc) {
+                config.vmId = argv[++i];
+                Logger::debug("Parsed VM ID: " + config.vmId);
+            }
+        } else if (arg == "-b" || arg == "--backup-id") {
+            if (i + 1 < argc) {
+                config.backupId = argv[++i];
+                Logger::debug("Parsed backup ID: " + config.backupId);
+            }
+        } else if (arg == "-s" || arg == "--server") {
+            if (i + 1 < argc) {
+                host = argv[++i];
+                Logger::debug("Parsed server host: " + host);
+            }
+        } else if (arg == "-u" || arg == "--username") {
+            if (i + 1 < argc) {
+                username = argv[++i];
+                Logger::debug("Parsed username: " + username);
+            }
+        } else if (arg == "-p" || arg == "--password") {
+            if (i + 1 < argc) {
+                password = argv[++i];
+                Logger::debug("Parsed password: [REDACTED]");
+            }
+        } else if (arg == "--parallel") {
+            if (i + 1 < argc) config.maxConcurrentDisks = std::stoi(argv[++i]);
+        } else if (arg == "--power-on") {
+            config.powerOnAfterRestore = true;
+        }
+    }
+
+    // Validate required parameters
+    if (config.vmId.empty() || config.backupId.empty() || host.empty() || username.empty() || password.empty()) {
+        Logger::error("Missing required parameters");
+        printUsage();
+        return false;
+    }
+
+    Logger::info("Starting restore process for VM: " + config.vmId);
+    
+    // Connect to vCenter
+    Logger::debug("Attempting to connect to vCenter at: " + host);
+    if (!jobManager_->connect(host, username, password)) {
+        Logger::error("Failed to connect to vCenter: " + jobManager_->getLastError());
+        return false;
+    }
+
+    Logger::info("Successfully connected to vCenter");
+    
+    try {
+        // Create and start restore job
+        auto job = jobManager_->createRestoreJob(config);
+        if (!job) {
+            Logger::error("Failed to create restore job: " + jobManager_->getLastError());
+            return false;
+        }
+
+        // Set up progress callback
+        job->setProgressCallback([](int progress) {
+            std::cout << "\rProgress: " << progress << "%" << std::flush;
+        });
+
+        // Set up status callback
+        job->setStatusCallback([](const std::string& status) {
+            std::cout << "\nStatus: " << status << std::endl;
+        });
+
+        // Start the job
+        if (!job->start()) {
+            Logger::error("Failed to start restore job: " + job->getError());
+            return false;
+        }
+
+        // Wait for job completion
+        while (job->isRunning()) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+
+        // Print final status
+        std::cout << "\nRestore job " << (job->isCompleted() ? "completed successfully" : "failed") << std::endl;
+        if (!job->isCompleted()) {
+            Logger::error("Error: " + job->getError());
+            return false;
+        }
+
+        Logger::info("Restore completed successfully for VM: " + config.vmId);
+        return true;
+    } catch (const std::exception& e) {
+        Logger::error("Error during restore: " + std::string(e.what()));
+        return false;
+    }
 }
 
 void BackupCLI::parseBackupOptions(int argc, char* argv[], BackupConfig& config) {

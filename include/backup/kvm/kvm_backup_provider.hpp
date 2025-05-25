@@ -19,52 +19,39 @@ public:
     KVMBackupProvider();
     ~KVMBackupProvider() override;
 
+    // Initialization
+    bool initialize();
+
     // Connection management
-    bool initialize() override;
     bool connect(const std::string& host, const std::string& username, const std::string& password) override;
     void disconnect() override;
     bool isConnected() const override;
 
-    // VM management
-    std::vector<std::string> listVMs() const override;
+    // VM operations
+    std::vector<std::string> listVMs() const;
+    bool getVMInfo(const std::string& vmId, std::string& name, std::string& status) const;
     bool getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) const override;
-    bool getVMInfo(const std::string& vmId, std::string& name, std::string& status) const override;
-
-    // Backup operations
-    bool startBackup(const std::string& vmId, const BackupConfig& config) override;
-    bool cancelBackup(const std::string& vmId) override;
-    bool pauseBackup(const std::string& vmId) override;
-    bool resumeBackup(const std::string& vmId) override;
-    BackupStatus getBackupStatus(const std::string& vmId) override;
-
-    // Restore operations
-    bool startRestore(const std::string& vmId, const std::string& backupId) override;
-    bool cancelRestore(const std::string& restoreId) override;
-    bool pauseRestore(const std::string& restoreId) override;
-    bool resumeRestore(const std::string& restoreId) override;
-    RestoreStatus getRestoreStatus(const std::string& restoreId) const override;
+    bool backupDisk(const std::string& vmId, const std::string& diskPath, const BackupConfig& config) override;
+    bool restoreDisk(const std::string& vmId, const std::string& diskPath, const RestoreConfig& config) override;
+    bool verifyDisk(const std::string& diskPath) override;
+    bool getChangedBlocks(const std::string& vmId, const std::string& diskPath,
+                         std::vector<std::pair<uint64_t, uint64_t>>& changedBlocks) override;
 
     // CBT operations
-    bool enableCBT(const std::string& vmId) override;
-    bool disableCBT(const std::string& vmId) override;
-    bool isCBTEnabled(const std::string& vmId) const override;
-    bool getChangedBlocks(const std::string& vmId, const std::string& diskPath,
-                         std::vector<std::pair<uint64_t, uint64_t>>& changedBlocks) const override;
+    bool enableCBT(const std::string& vmId);
+    bool disableCBT(const std::string& vmId);
+    bool isCBTEnabled(const std::string& vmId) const;
 
-    // Snapshot operations
-    bool createSnapshot(const std::string& vmId, const std::string& snapshotId);
-    bool removeSnapshot(const std::string& vmId, const std::string& snapshotId);
-
-    // Callbacks
-    void setProgressCallback(ProgressCallback callback) override;
-    void setStatusCallback(StatusCallback callback) override;
+    // Backup management
+    bool listBackups(std::vector<std::string>& backupIds) override;
+    bool deleteBackup(const std::string& backupId) override;
+    bool verifyBackup(const std::string& backupId) override;
 
     // Error handling
     std::string getLastError() const override { return lastError_; }
     void clearLastError() override;
 
-    // Additional methods
-    bool verifyBackup(const std::string& backupId) override;
+    // Progress tracking
     double getProgress() const override;
 
 private:
@@ -82,7 +69,8 @@ private:
     bool initializeCBT(const std::string& vmId);
     bool cleanupCBT(const std::string& vmId);
     std::string getDiskFormat(const std::string& diskPath) const;
-    std::optional<BackupMetadata> getLatestBackupInfo(const std::string& backupId);
     bool verifyDiskIntegrity(const std::string& diskPath);
     std::string calculateChecksum(const std::string& filePath);
+    bool createSnapshot(const std::string& vmId, const std::string& snapshotId);
+    bool removeSnapshot(const std::string& vmId, const std::string& snapshotId);
 }; 

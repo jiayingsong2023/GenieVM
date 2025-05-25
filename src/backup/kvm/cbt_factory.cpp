@@ -86,7 +86,10 @@ bool CBTFactory::isLVMDisk(const std::string& diskPath) {
 
 std::shared_ptr<BackupProvider> CBTFactory::createProvider(const std::string& type) {
     if (type == "vmware") {
-        auto connection = std::make_shared<VMwareConnection>("", "", "");
+        auto connection = std::make_shared<VMwareConnection>();
+        if (!connection->connect("", "", "")) {
+            throw std::runtime_error("Failed to connect to VMware: " + connection->getLastError());
+        }
         return std::make_shared<VMwareBackupProvider>(connection);
     }
     throw std::runtime_error("Unsupported provider type: " + type);

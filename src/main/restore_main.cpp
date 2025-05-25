@@ -1,80 +1,86 @@
-#include "restore/restore_manager.hpp"
+#include "backup/job_manager.hpp"
 #include "common/logger.hpp"
 #include <iostream>
 #include <string>
-#include <cstdlib>
-
-void printRestoreUsage() {
-    std::cout << "Usage: genievm restore [options]\n"
-              << "Options:\n"
-              << "  -h, --help                 Show this help message\n"
-              << "  -v, --vm-name <name>       Name of the VM to restore\n"
-              << "  -b, --backup-dir <dir>     Directory containing the backup\n"
-              << "  -d, --datastore <name>     Target datastore for restore\n"
-              << "  -r, --resource-pool <name> Target resource pool for restore\n"
-              << "  -s, --server <host>        vCenter/ESXi host\n"
-              << "  -u, --username <user>      Username for vCenter/ESXi\n"
-              << "  -p, --password <pass>      Password for vCenter/ESXi\n";
-}
+#include <memory>
+#include <thread>
+#include <chrono>
 
 int restoreMain(int argc, char* argv[]) {
-    std::string vmName;
-    std::string backupDir;
-    std::string datastore;
-    std::string resourcePool;
-    std::string host;
-    std::string username;
-    std::string password;
-
-    // Parse command line arguments
-    for (int i = 1; i < argc; i++) {
-        std::string arg = argv[i];
-        if (arg == "-h" || arg == "--help") {
-            printRestoreUsage();
-            return 0;
-        } else if (arg == "-v" || arg == "--vm-name") {
-            if (i + 1 < argc) vmName = argv[++i];
-        } else if (arg == "-b" || arg == "--backup-dir") {
-            if (i + 1 < argc) backupDir = argv[++i];
-        } else if (arg == "-d" || arg == "--datastore") {
-            if (i + 1 < argc) datastore = argv[++i];
-        } else if (arg == "-r" || arg == "--resource-pool") {
-            if (i + 1 < argc) resourcePool = argv[++i];
-        } else if (arg == "-s" || arg == "--server") {
-            if (i + 1 < argc) host = argv[++i];
-        } else if (arg == "-u" || arg == "--username") {
-            if (i + 1 < argc) username = argv[++i];
-        } else if (arg == "-p" || arg == "--password") {
-            if (i + 1 < argc) password = argv[++i];
-        }
-    }
-
-    // Validate required parameters
-    if (vmName.empty() || backupDir.empty() || datastore.empty() || 
-        resourcePool.empty() || host.empty() || username.empty() || password.empty()) {
-        std::cerr << "Error: Missing required parameters\n";
-        printRestoreUsage();
+    if (argc < 6) {
+        std::cerr << "Usage: " << argv[0] << " <vm_name> <backup_dir> <datastore> <resource_pool> <host> [username] [password]" << std::endl;
         return 1;
     }
 
+    std::string vmName = argv[1];
+    std::string backupDir = argv[2];
+    std::string datastore = argv[3];
+    std::string resourcePool = argv[4];
+    std::string host = argv[5];
+    std::string username = argc > 6 ? argv[6] : "";
+    std::string password = argc > 7 ? argv[7] : "";
+
     try {
-        // Create and initialize restore manager
-        RestoreManager restoreManager(host, username, password);
-        if (!restoreManager.initialize()) {
-            std::cerr << "Failed to initialize restore manager\n";
+        // Create JobManager
+        auto jobManager = std::make_shared<JobManager>();
+        
+        // Initialize and connect
+        if (!jobManager->initialize()) {
+            Logger::error("Failed to initialize job manager");
             return 1;
         }
 
-        // Perform restore
-        if (!restoreManager.restoreVM(vmName, backupDir, datastore, resourcePool)) {
-            std::cerr << "Failed to restore VM\n";
+        if (!jobManager->connect(host, username, password)) {
+            Logger::error("Failed to connect to server");
             return 1;
         }
 
-        std::cout << "VM restored successfully\n";
-        return 0;
+        // Create restore configuration
+        RestoreConfig config;
+        config.vmId = vmName;
+        config.backupId = backupDir;
+        config.datastore = datastore;
+        config.resourcePool = resourcePool;
+
+        // Create and start restore job
+        auto job = jobManager->createRestoreJob(config);
+        if (!job) {
+            Logger::error("Failed to create restore job");
+            return 1;
+        }
+
+        // Set up progress callback
+        job->setProgressCallback([](int progress) {
+            Logger::info("Restore progress: " + std::to_string(progress) + "%");
+        });
+
+        // Set up status callback
+        job->setStatusCallback([](const std::string& status) {
+            Logger::info("Restore status: " + status);
+        });
+
+        // Start the restore job
+        if (!job->start()) {
+            Logger::error("Failed to start restore job");
+            return 1;
+        }
+
+        // Wait for job completion
+        while (job->getState() == Job::State::RUNNING) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+
+        // Check final status
+        if (job->getState() == Job::State::COMPLETED) {
+            Logger::info("Restore completed successfully");
+            return 0;
+        } else {
+            Logger::error("Restore failed: " + job->getError());
+            return 1;
+        }
+
     } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
+        Logger::error("Error during restore: " + std::string(e.what()));
         return 1;
     }
 } 

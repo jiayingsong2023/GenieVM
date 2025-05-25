@@ -27,8 +27,14 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "Initializing logger...\n");
     fflush(stderr);
     
-    if (!Logger::initialize("/tmp/genievm.log", LogLevel::DEBUG)) {
-        fprintf(stderr, "Failed to initialize logger\n");
+    try {
+        if (!Logger::initialize("/tmp/genievm.log", LogLevel::DEBUG)) {
+            fprintf(stderr, "Failed to initialize logger\n");
+            fflush(stderr);
+            return 1;
+        }
+    } catch (const std::exception& e) {
+        fprintf(stderr, "Failed to initialize logger: %s\n", e.what());
         fflush(stderr);
         return 1;
     }

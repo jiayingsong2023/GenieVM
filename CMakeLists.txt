@@ -92,11 +92,13 @@ set(SOURCES
     # Backup files
     src/backup/backup_cli.cpp
     src/backup/backup_job.cpp
-    src/backup/backup_manager.cpp
     src/backup/backup_scheduler.cpp
     src/backup/backup_verifier.cpp
     src/backup/disk_backup.cpp
     src/backup/restore_job.cpp
+    src/backup/job.cpp
+    src/backup/job_manager.cpp
+    src/backup/verify_job.cpp
 
     # Backup KVM files
     src/backup/kvm/cbt_factory.cpp
@@ -115,10 +117,6 @@ set(SOURCES
     src/common/vmware_connection.cpp
     src/common/vsphere_manager.cpp
     src/common/vsphere_rest_client.cpp
-
-    # Restore files
-    src/restore/disk_restore.cpp
-    src/restore/restore_manager.cpp
 
     # VDDK wrapper files
     src/vddk_wrapper/vddk_wrapper.cpp
@@ -139,24 +137,25 @@ target_include_directories(genievm
 
 # Link libraries
 target_link_libraries(genievm
+    PRIVATE
     ${VDDK_LIBRARY}
+    ${CURL_LIBRARIES}
+    ${LIBVIRT_LIBRARIES}
+    nlohmann_json::nlohmann_json
+    CLI11::CLI11
     pthread
     dl
     ssl
     crypto
     z
-    /usr/lib/x86_64-linux-gnu/libcurl.so.4
-    ${LIBVIRT_LIBRARIES}
-    nlohmann_json::nlohmann_json
-    CLI11::CLI11
 )
 
 # Set RPATH
 set_target_properties(genievm PROPERTIES
-    INSTALL_RPATH "/usr/lib/x86_64-linux-gnu:${VDDK_ROOT}/lib64"
+    INSTALL_RPATH "${VDDK_ROOT}/lib64"
     BUILD_WITH_INSTALL_RPATH TRUE
     SKIP_BUILD_RPATH FALSE
-    LINK_FLAGS "-Wl,--no-as-needed -Wl,--exclude-libs,libvixDiskLib.so -Wl,--disable-new-dtags -Wl,--exclude-libs,libcurl.so.4"
+    LINK_FLAGS "-Wl,--no-as-needed"
 )
 
 # Install

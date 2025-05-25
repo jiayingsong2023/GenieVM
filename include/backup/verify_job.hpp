@@ -2,7 +2,6 @@
 
 #include "backup/job.hpp"
 #include "backup/backup_provider.hpp"
-#include "backup/vm_config.hpp"
 #include "common/parallel_task_manager.hpp"
 #include "common/logger.hpp"
 #include <memory>
@@ -11,12 +10,12 @@
 #include <functional>
 #include <mutex>
 
-class BackupJob : public Job {
+class VerifyJob : public Job {
 public:
-    BackupJob(std::shared_ptr<BackupProvider> provider,
+    VerifyJob(std::shared_ptr<BackupProvider> provider,
              std::shared_ptr<ParallelTaskManager> taskManager,
-             const BackupConfig& config);
-    ~BackupJob() override;
+             const VerifyConfig& config);
+    ~VerifyJob() override;
 
     // Job interface implementation
     bool start() override;
@@ -33,28 +32,21 @@ public:
     std::string getError() const override;
     std::string getId() const override;
 
-    // Backup-specific methods
-    bool verifyBackup();
-    bool cleanupOldBackups();
-    bool getChangedBlocks(std::vector<std::pair<uint64_t, uint64_t>>& changedBlocks);
-
     // Configuration
-    BackupConfig getConfig() const { return config_; }
-    void setConfig(const BackupConfig& config) { config_ = config; }
+    VerifyConfig getConfig() const { return config_; }
+    void setConfig(const VerifyConfig& config) { config_ = config; }
 
 private:
-    void executeBackup();
-    void handleBackupProgress(int progress);
-    void handleBackupStatus(const std::string& status);
-    void handleBackupError(const std::string& error);
-    bool validateBackupConfig() const;
-    bool createBackupDirectory() const;
-    bool writeBackupMetadata() const;
-    bool readBackupMetadata() const;
-    bool cleanupBackupDirectory() const;
+    bool verifyBackup();
+    void handleVerificationCompletion(bool success, const std::string& error);
+    bool validateVerifyConfig() const;
+    bool createVerifyDirectory() const;
+    bool writeVerifyMetadata() const;
+    bool readVerifyMetadata() const;
+    bool cleanupVerifyDirectory() const;
 
     std::shared_ptr<BackupProvider> provider_;
     std::shared_ptr<ParallelTaskManager> taskManager_;
-    BackupConfig config_;
+    VerifyConfig config_;
     mutable std::mutex mutex_;
 }; 

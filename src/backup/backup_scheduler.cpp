@@ -1,21 +1,25 @@
 #include "backup/backup_scheduler.hpp"
-#include "backup/backup_manager.hpp"
+#include "backup/backup_job.hpp"
+#include "backup/job_manager.hpp"
+#include "backup/vm_config.hpp"
 #include "common/logger.hpp"
-#include <filesystem>
-#include <fstream>
-#include <sstream>
-#include <ctime>
-#include <iomanip>
-#include <algorithm>
-#include <stdexcept>
-#include <nlohmann/json.hpp>
+#include "common/backup_status.hpp"
+#include "common/parallel_task_manager.hpp"
 #include <chrono>
+#include <thread>
+#include <filesystem>
+#include <algorithm>
+#include <sstream>
+#include <iomanip>
 
-using namespace std::chrono;
-using namespace std::filesystem;
+using namespace std::chrono_literals;
 
-BackupScheduler::BackupScheduler(std::shared_ptr<BackupManager> manager)
-    : manager_(manager), scheduler_(std::make_unique<Scheduler>()) {
+BackupScheduler::BackupScheduler(std::shared_ptr<JobManager> jobManager,
+                               std::shared_ptr<BackupProvider> provider)
+    : jobManager_(std::move(jobManager))
+    , provider_(std::move(provider))
+    , running_(false)
+    , stopRequested_(false) {
 }
 
 BackupScheduler::~BackupScheduler() {
@@ -23,44 +27,58 @@ BackupScheduler::~BackupScheduler() {
 }
 
 bool BackupScheduler::initialize() {
-    if (!manager_) {
-        Logger::error("No manager provided");
+    if (!jobManager_) {
+        Logger::error("No job manager provided");
+        return false;
+    }
+    if (!provider_) {
+        Logger::error("No backup provider provided");
         return false;
     }
     return true;
 }
 
 bool BackupScheduler::scheduleBackup(const std::string& vmId, const BackupConfig& config) {
-    if (!manager_) {
-        Logger::error("No manager provided");
+    if (!jobManager_) {
+        Logger::error("No job manager provided");
         return false;
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    scheduledBackups_[vmId] = config;
+    schedules_[vmId] = config;
     return true;
 }
 
 bool BackupScheduler::cancelBackup(const std::string& backupId) {
     std::lock_guard<std::mutex> lock(mutex_);
-    return scheduledBackups_.erase(backupId) > 0;
+    return schedules_.erase(backupId) > 0;
 }
 
 bool BackupScheduler::pauseBackup(const std::string& backupId) {
-    // TODO: Implement pause logic
-    return true;
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = schedules_.find(backupId);
+    if (it != schedules_.end()) {
+        // TODO: Implement pause functionality
+        return true;
+    }
+    return false;
 }
 
 bool BackupScheduler::resumeBackup(const std::string& backupId) {
-    // TODO: Implement resume logic
-    return true;
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = schedules_.find(backupId);
+    if (it != schedules_.end()) {
+        // TODO: Implement resume functionality
+        return true;
+    }
+    return false;
 }
 
 std::vector<BackupConfig> BackupScheduler::getScheduledBackups() const {
     std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
     std::vector<BackupConfig> configs;
-    configs.reserve(scheduledBackups_.size());
-    for (const auto& [_, config] : scheduledBackups_) {
+    configs.reserve(schedules_.size());
+    for (const auto& [_, config] : schedules_) {
         configs.push_back(config);
     }
     return configs;
@@ -68,120 +86,37 @@ std::vector<BackupConfig> BackupScheduler::getScheduledBackups() const {
 
 BackupConfig BackupScheduler::getBackupConfig(const std::string& backupId) const {
     std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
-    auto it = scheduledBackups_.find(backupId);
-    return it != scheduledBackups_.end() ? it->second : BackupConfig{};
+    auto it = schedules_.find(backupId);
+    if (it != schedules_.end()) {
+        return it->second;
+    }
+    return BackupConfig{};
 }
 
 void BackupScheduler::addSchedule(const std::string& vmId, const BackupConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    // Calculate next run time
-    auto nextRun = calculateNextRun(config);
-    
-    // Create schedule entry
-    Schedule schedule;
-    schedule.config = config;
-    schedule.nextRun = nextRun;
-    schedule.lastRun = system_clock::time_point();
-    schedule.lastBackupPath = "";
-    
-    // Add to schedules map
-    schedules_[vmId] = schedule;
-    
-    // Schedule the task
-    scheduler_->scheduleTask(vmId, system_clock::to_time_t(nextRun), [this, vmId]() {
-        checkSchedules();
-    });
-    
-    Logger::info("Added backup schedule for VM: " + vmId);
+    schedules_[vmId] = config;
 }
 
 void BackupScheduler::removeSchedule(const std::string& vmId) {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    auto it = schedules_.find(vmId);
-    if (it == schedules_.end()) {
-        Logger::error("No schedule found for VM: " + vmId);
-        return;
-    }
-
-    if (running_) {
-        scheduler_->cancelTask(vmId);
-    }
-
-    schedules_.erase(it);
-    Logger::info("Removed backup schedule for VM: " + vmId);
+    schedules_.erase(vmId);
 }
 
 void BackupScheduler::updateSchedule(const std::string& vmId, const BackupConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    auto it = schedules_.find(vmId);
-    if (it == schedules_.end()) {
-        Logger::error("No schedule found for VM: " + vmId);
-        return;
-    }
-    
-    // Calculate next run time
-    auto nextRun = calculateNextRun(config);
-    
-    // Update schedule
-    it->second.config = config;
-    it->second.nextRun = nextRun;
-    
-    // Reschedule the task
-    if (running_) {
-        scheduler_->cancelTask(vmId);
-        scheduler_->scheduleTask(vmId, system_clock::to_time_t(nextRun), [this, vmId]() {
-            checkSchedules();
-        });
-    }
-    
-    Logger::info("Updated backup schedule for VM: " + vmId);
-}
-
-BackupConfig BackupScheduler::getSchedule(const std::string& vmId) const {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
-    
-    auto it = schedules_.find(vmId);
-    if (it == schedules_.end()) {
-        throw std::runtime_error("No schedule found for VM: " + vmId);
-    }
-
-    return it->second.config;
-}
-
-void BackupScheduler::getAllSchedules(std::vector<std::pair<std::string, BackupConfig>>& schedules) const {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
-    schedules.clear();
-    schedules.reserve(schedules_.size());
-    
-    for (const auto& [vmId, schedule] : schedules_) {
-        schedules.emplace_back(vmId, schedule.config);
-    }
-}
-
-system_clock::time_point BackupScheduler::getNextRunTime(const std::string& vmId) const {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
-    
-    auto it = schedules_.find(vmId);
-    if (it == schedules_.end()) {
-        return system_clock::time_point::min();
-    }
-    
-    return it->second.nextRun;
+    schedules_[vmId] = config;
 }
 
 void BackupScheduler::applyRetentionPolicy(const std::string& vmId) {
     std::lock_guard<std::mutex> lock(mutex_);
-    
     auto it = schedules_.find(vmId);
     if (it == schedules_.end()) {
         Logger::error("No schedule found for VM: " + vmId);
         return;
     }
 
-    const auto& config = it->second.config;
+    const auto& config = it->second;
     if (config.retentionDays <= 0) {
         return;
     }
@@ -191,60 +126,140 @@ void BackupScheduler::applyRetentionPolicy(const std::string& vmId) {
 
 void BackupScheduler::cleanupOldBackups(const std::string& vmId) {
     std::lock_guard<std::mutex> lock(mutex_);
-    
     auto it = schedules_.find(vmId);
     if (it == schedules_.end()) {
         Logger::error("No schedule found for VM: " + vmId);
         return;
     }
 
-    const auto& config = it->second.config;
-    if (config.maxBackups <= 0) {
+    const auto& config = it->second;
+    if (config.retentionDays <= 0) {
         return;
     }
 
-    auto backupPaths = getBackupPaths(vmId);
-    
-    // Sort backups by creation time (newest first)
-    std::sort(backupPaths.begin(), backupPaths.end(),
-              [](const std::string& a, const std::string& b) {
-                  return last_write_time(a) > last_write_time(b);
-              });
+    try {
+        auto backupPaths = getBackupPaths(vmId);
+        auto now = std::chrono::system_clock::now();
+        auto retentionPeriod = std::chrono::hours(24 * config.retentionDays);
 
-    // Keep only the most recent backups within retention period
-    size_t keptBackups = 0;
-    for (const auto& path : backupPaths) {
-        if (keptBackups >= config.maxBackups || isBackupExpired(vmId, config.retentionDays)) {
-            try {
-                remove_all(path);
-                Logger::info("Removed old backup: " + path);
-            } catch (const std::filesystem::filesystem_error& e) {
-                Logger::error("Failed to remove old backup " + path + ": " + e.what());
+        for (const auto& path : backupPaths) {
+            auto lastWriteTime = std::filesystem::last_write_time(path);
+            auto fileTime = std::chrono::system_clock::from_time_t(
+                std::chrono::system_clock::to_time_t(
+                    std::chrono::system_clock::now() - 
+                    std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                        lastWriteTime.time_since_epoch()
+                    )
+                )
+            );
+            
+            if (now - fileTime > retentionPeriod) {
+                try {
+                    std::filesystem::remove_all(path);
+                    Logger::info("Removed old backup: " + path);
+                } catch (const std::exception& e) {
+                    Logger::error("Failed to remove old backup " + path + ": " + e.what());
+                }
             }
-        } else {
-            keptBackups++;
         }
+    } catch (const std::exception& e) {
+        Logger::error("Error cleaning up old backups: " + std::string(e.what()));
     }
 }
 
+std::vector<std::string> BackupScheduler::getBackupPaths(const std::string& vmId) const {
+    std::vector<std::string> paths;
+    try {
+        auto backupDir = std::filesystem::path(vmId);
+        if (std::filesystem::exists(backupDir)) {
+            for (const auto& entry : std::filesystem::directory_iterator(backupDir)) {
+                if (entry.is_directory()) {
+                    paths.push_back(entry.path().string());
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        Logger::error("Failed to read backup directory: " + std::string(e.what()));
+    }
+    return paths;
+}
+
+bool BackupScheduler::isBackupExpired(const std::string& vmId, int retentionDays) const {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
+    auto it = schedules_.find(vmId);
+    if (it == schedules_.end()) {
+        return false;
+    }
+
+    try {
+        auto backupPaths = getBackupPaths(vmId);
+        if (backupPaths.empty()) {
+            return true;
+        }
+
+        auto now = std::chrono::system_clock::now();
+        auto retentionPeriod = std::chrono::hours(24 * retentionDays);
+
+        for (const auto& path : backupPaths) {
+            auto lastWriteTime = std::filesystem::last_write_time(path);
+            auto fileTime = std::chrono::system_clock::from_time_t(
+                std::chrono::system_clock::to_time_t(
+                    std::chrono::system_clock::now() - 
+                    std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                        lastWriteTime.time_since_epoch()
+                    )
+                )
+            );
+            
+            if (now - fileTime <= retentionPeriod) {
+                return false;
+            }
+        }
+        return true;
+    } catch (const std::exception& e) {
+        Logger::error("Error checking backup expiration: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool BackupScheduler::isBackupNeeded(const std::string& vmId, const BackupConfig& config) const {
+    if (!provider_) {
+        return false;
+    }
+
+    try {
+        std::vector<std::pair<uint64_t, uint64_t>> changedBlocks;
+        if (provider_->getChangedBlocks(vmId, "", changedBlocks)) {
+            return !changedBlocks.empty();
+        }
+        return true;
+    } catch (const std::exception& e) {
+        Logger::error("Error checking if backup is needed: " + std::string(e.what()));
+        return false;
+    }
+}
+
+std::string BackupScheduler::getBackupPath(const std::string& vmId, const BackupConfig& config) const {
+    auto now = std::chrono::system_clock::now();
+    auto time = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ss;
+    ss << config.backupDir << "/" << vmId << "_" << std::put_time(std::localtime(&time), "%Y%m%d_%H%M%S");
+    return ss.str();
+}
+
 void BackupScheduler::start() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
     if (running_) {
-        Logger::info("Scheduler is already running");
         return;
     }
-    
+
     running_ = true;
-    
-    // Schedule all existing tasks
-    for (const auto& [vmId, schedule] : schedules_) {
-        scheduler_->scheduleTask(vmId, system_clock::to_time_t(schedule.nextRun), [this, vmId]() {
+    stopRequested_ = false;
+    schedulerThread_ = std::thread([this]() {
+        while (!stopRequested_) {
             checkSchedules();
-        });
-    }
-    
-    Logger::info("Backup scheduler started");
+            std::this_thread::sleep_for(60s);
+        }
+    });
 }
 
 void BackupScheduler::stop() {
@@ -252,171 +267,100 @@ void BackupScheduler::stop() {
         return;
     }
 
+    stopRequested_ = true;
+    if (schedulerThread_.joinable()) {
+        schedulerThread_.join();
+    }
     running_ = false;
-    scheduler_.reset();
-    Logger::info("Backup scheduler stopped");
 }
 
 void BackupScheduler::checkSchedules() {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    auto now = system_clock::now();
-    
-    for (auto& [vmId, schedule] : schedules_) {
-        if (now >= schedule.nextRun) {
-            // Check if backup is needed
-            if (isBackupNeeded(vmId, schedule.config)) {
-                // Start backup
-                if (manager_->startBackup(vmId, schedule.config)) {
-                    schedule.lastRun = now;
-                    schedule.lastBackupPath = getBackupPath(vmId, schedule.config);
-                    
-                    // Calculate next run time
-                    schedule.nextRun = calculateNextRun(schedule.config);
-                    
-                    // Reschedule next run
-                    scheduler_->scheduleTask(vmId, system_clock::to_time_t(schedule.nextRun), [this, vmId]() {
-                        checkSchedules();
-                    });
-                    
-                    Logger::info("Started scheduled backup for VM: " + vmId);
-                } else {
-                    Logger::error("Failed to start scheduled backup for VM: " + vmId);
-                }
-            } else {
-                // Skip backup, calculate next run time
-                schedule.nextRun = calculateNextRun(schedule.config);
-                
-                // Reschedule next run
-                scheduler_->scheduleTask(vmId, system_clock::to_time_t(schedule.nextRun), [this, vmId]() {
-                    checkSchedules();
-                });
-                
-                Logger::info("Skipped scheduled backup for VM: " + vmId + " (not needed)");
-            }
+    auto now = std::chrono::system_clock::now();
+
+    for (const auto& [vmId, config] : schedules_) {
+        if (shouldRunBackup(config)) {
+            executeBackup(vmId, config);
         }
     }
 }
 
-bool BackupScheduler::shouldRunBackup(const Schedule& schedule) const {
-    return schedule.nextRun <= system_clock::now();
+bool BackupScheduler::shouldRunBackup(const BackupConfig& config) const {
+    auto now = std::chrono::system_clock::now();
+    auto nextRun = getNextRunTime(config);
+    return now >= nextRun;
 }
 
-void BackupScheduler::updateNextRun(Schedule& schedule) {
-    schedule.nextRun = calculateNextRun(schedule.config);
-}
-
-system_clock::time_point BackupScheduler::calculateNextRun(const BackupConfig& config) const {
-    auto now = system_clock::now();
-    auto nowTime = system_clock::to_time_t(now);
-    auto localTime = std::localtime(&nowTime);
-    
-    if (config.scheduleType == "daily") {
-        localTime->tm_hour = config.schedule.hour;
-        localTime->tm_min = config.schedule.minute;
-        localTime->tm_sec = 0;
+void BackupScheduler::executeBackup(const std::string& vmId, const BackupConfig& config) {
+    try {
+        // Create a task manager for the backup job
+        auto taskManager = std::make_shared<ParallelTaskManager>();
+        auto job = std::make_shared<BackupJob>(provider_, taskManager, config);
         
-        auto nextRun = system_clock::from_time_t(std::mktime(localTime));
-        if (nextRun <= now) {
-            nextRun += hours(24);
+        // Use the job manager to manage the job
+        jobManager_->addJob(job);
+        
+        job->setProgressCallback([this](int progress) {
+            // TODO: Implement progress tracking
+        });
+
+        job->setStatusCallback([this](const std::string& status) {
+            // TODO: Implement status tracking
+        });
+
+        if (!job->start()) {
+            Logger::error("Failed to start backup job for VM: " + vmId);
+            return;
         }
-        return nextRun;
-    } else if (config.scheduleType == "weekly") {
-        int daysUntilNext = (config.schedule.day - localTime->tm_wday + 7) % 7;
+
+        // Wait for job completion
+        while (job->getState() == Job::State::RUNNING) {
+            std::this_thread::sleep_for(1s);
+        }
+
+        if (job->getState() == Job::State::FAILED) {
+            Logger::error("Backup job failed for VM: " + vmId);
+        }
+    } catch (const std::exception& e) {
+        Logger::error("Error executing backup: " + std::string(e.what()));
+    }
+}
+
+std::chrono::system_clock::time_point BackupScheduler::getNextRunTime(const BackupConfig& config) const {
+    auto now = std::chrono::system_clock::now();
+    auto time = std::chrono::system_clock::to_time_t(now);
+    std::tm* tm = std::localtime(&time);
+
+    if (config.scheduleType == "daily") {
+        if (config.schedule.hour == 0 && config.schedule.minute == 0) {
+            return now + std::chrono::hours(24);
+        }
         
-        if (daysUntilNext == 0 && 
-            (localTime->tm_hour > config.schedule.hour ||
-             (localTime->tm_hour == config.schedule.hour && localTime->tm_min >= config.schedule.minute))) {
+        tm->tm_hour = config.schedule.hour;
+        tm->tm_min = config.schedule.minute;
+        tm->tm_sec = 0;
+        auto next = std::chrono::system_clock::from_time_t(std::mktime(tm));
+        if (next <= now) {
+            next += std::chrono::hours(24);
+        }
+        return next;
+    }
+    else if (config.scheduleType == "weekly") {
+        if (config.schedule.day < 0 || config.schedule.day > 6) {
+            return now + std::chrono::hours(24 * 7);
+        }
+        
+        int daysUntilNext = (config.schedule.day - tm->tm_wday + 7) % 7;
+        if (daysUntilNext == 0 && config.schedule.hour == 0 && config.schedule.minute == 0) {
             daysUntilNext = 7;
         }
-        
-        localTime->tm_mday += daysUntilNext;
-        localTime->tm_hour = config.schedule.hour;
-        localTime->tm_min = config.schedule.minute;
-        localTime->tm_sec = 0;
-        
-        return system_clock::from_time_t(std::mktime(localTime));
-    } else if (config.scheduleType == "monthly") {
-        localTime->tm_mday = config.schedule.day;
-        localTime->tm_hour = config.schedule.hour;
-        localTime->tm_min = config.schedule.minute;
-        localTime->tm_sec = 0;
-        
-        auto nextRun = system_clock::from_time_t(std::mktime(localTime));
-        if (nextRun <= now) {
-            localTime->tm_mon++;
-            nextRun = system_clock::from_time_t(std::mktime(localTime));
-        }
-        return nextRun;
+        return now + std::chrono::hours(24 * daysUntilNext);
+    }
+    else if (config.scheduleType == "interval") {
+        // Default to 24 hours if no interval is specified
+        return now + std::chrono::hours(24);
     }
     
-    return now + hours(24); // Default to daily if schedule type is invalid
-}
-
-std::vector<std::string> BackupScheduler::getBackupPaths(const std::string& vmId) const {
-    std::vector<std::string> paths;
-    std::string backupDir = "backups/" + vmId;
-    
-    try {
-        for (const auto& entry : directory_iterator(backupDir)) {
-            if (entry.is_directory()) {
-                paths.push_back(entry.path().string());
-            }
-        }
-    } catch (const std::filesystem::filesystem_error& e) {
-        Logger::error("Failed to read backup directory: " + std::string(e.what()));
-    }
-    
-    return paths;
-}
-
-bool BackupScheduler::isBackupExpired(const std::string& vmId, int retentionDays) const {
-    auto it = schedules_.find(vmId);
-    if (it == schedules_.end() || it->second.lastBackupPath.empty()) {
-        return true;
-    }
-    
-    try {
-        auto now = system_clock::now();
-        auto lastWriteTime = system_clock::from_time_t(
-            std::chrono::system_clock::to_time_t(
-                system_clock::now() - duration_cast<system_clock::duration>(
-                    last_write_time(it->second.lastBackupPath).time_since_epoch()
-                )
-            )
-        );
-        auto age = std::chrono::duration_cast<std::chrono::hours>(now - lastWriteTime);
-        return age.count() >= retentionDays * 24;
-    } catch (const std::exception& e) {
-        Logger::error("Error checking backup expiration: " + std::string(e.what()));
-        return true;
-    }
-}
-
-bool BackupScheduler::isBackupNeeded(const std::string& vmId, const BackupConfig& config) const {
-    // Check if backup is expired
-    if (isBackupExpired(vmId, config.retentionDays)) {
-        return true;
-    }
-    
-    // Check if VM has changed
-    if (config.enableCBT) {
-        std::vector<std::pair<uint64_t, uint64_t>> changedBlocks;
-        if (manager_->getChangedBlocks(vmId, "", changedBlocks)) {
-            return !changedBlocks.empty();
-        }
-    }
-    
-    return false;
-}
-
-std::string BackupScheduler::getBackupPath(const std::string& vmId, const BackupConfig& config) const {
-    auto now = system_clock::now();
-    auto nowTime = system_clock::to_time_t(now);
-    auto localTime = std::localtime(&nowTime);
-    
-    std::stringstream ss;
-    ss << config.backupPath << "/" << vmId << "_"
-       << std::put_time(localTime, "%Y%m%d_%H%M%S");
-    return ss.str();
+    // Default case
+    return now + std::chrono::hours(24);
 } 

@@ -1,134 +1,183 @@
 #include "backup/backup_job.hpp"
+#include "backup/backup_provider.hpp"
+#include "common/parallel_task_manager.hpp"
 #include "common/logger.hpp"
-#include <chrono>
-#include <random>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
-#include <iomanip>
+#include <chrono>
+#include <thread>
+#include <nlohmann/json.hpp>
 
-BackupJob::BackupJob(std::shared_ptr<BackupProvider> provider, const BackupConfig& config)
+using namespace std::filesystem;
+using json = nlohmann::json;
+
+BackupJob::BackupJob(std::shared_ptr<BackupProvider> provider,
+                    std::shared_ptr<ParallelTaskManager> taskManager,
+                    const BackupConfig& config)
     : provider_(provider)
-    , config_(config)
-    , status_("pending")
-    , progress_(0.0)
-    , isRunning_(false)
-    , isPaused_(false)
-{
-    id_ = generateId();
+    , taskManager_(taskManager)
+    , config_(config) {
+    // Generate a unique job ID using our own implementation
+    setId(generateId());
+    setStatus("pending");
 }
 
 BackupJob::~BackupJob() {
-    cancel();
+    if (isRunning()) {
+        cancel();
+    }
 }
 
 bool BackupJob::start() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (isRunning_) {
+    
+    if (isRunning() || isCompleted() || isFailed() || isCancelled()) {
+        setError("Cannot start job in current state");
         return false;
     }
 
-    status_ = "running";
-    isRunning_ = true;
-    return true;
-}
-
-bool BackupJob::cancel() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!isRunning_) {
+    if (!validateBackupConfig()) {
+        setError("Invalid backup configuration");
+        setState(State::FAILED);
         return false;
     }
 
-    isRunning_ = false;
-    status_ = "cancelled";
+    if (!createBackupDirectory()) {
+        setError("Failed to create backup directory");
+        setState(State::FAILED);
+        return false;
+    }
+
+    setState(State::RUNNING);
+    setStatus("Starting backup");
+    updateProgress(0);
+
+    // Start backup in a separate thread
+    std::thread([this]() {
+        try {
+            executeBackup();
+        } catch (const std::exception& e) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            setError(std::string("Backup failed: ") + e.what());
+            setState(State::FAILED);
+        }
+    }).detach();
+
     return true;
 }
 
 bool BackupJob::pause() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!isRunning_ || isPaused_) {
+    if (!isRunning() || isPaused()) {
+        setError("Cannot pause job in current state");
         return false;
     }
-
-    isPaused_ = true;
-    status_ = "paused";
+    setState(State::PAUSED);
+    setStatus("Backup paused");
     return true;
 }
 
 bool BackupJob::resume() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!isRunning_ || !isPaused_) {
+    if (!isRunning() || !isPaused()) {
+        setError("Cannot resume job in current state");
         return false;
     }
-
-    isPaused_ = false;
-    status_ = "running";
+    setState(State::RUNNING);
+    setStatus("Backup resumed");
     return true;
 }
 
-std::string BackupJob::getId() const {
-    return id_;
-}
-
-std::string BackupJob::getStatus() const {
+bool BackupJob::cancel() {
     std::lock_guard<std::mutex> lock(mutex_);
-    return status_;
-}
-
-double BackupJob::getProgress() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return progress_;
-}
-
-std::string BackupJob::getError() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return error_;
+    if (!isRunning()) {
+        setError("Cannot cancel job in current state");
+        return false;
+    }
+    setState(State::CANCELLED);
+    setStatus("Backup cancelled");
+    return true;
 }
 
 bool BackupJob::isRunning() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return isRunning_;
+    return getState() == State::RUNNING;
 }
 
 bool BackupJob::isPaused() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return isPaused_;
+    return getState() == State::PAUSED;
 }
 
-BackupConfig BackupJob::getConfig() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return config_;
+bool BackupJob::isCompleted() const {
+    return getState() == State::COMPLETED;
 }
 
-void BackupJob::setConfig(const BackupConfig& config) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    config_ = config;
+bool BackupJob::isFailed() const {
+    return getState() == State::FAILED;
 }
 
-void BackupJob::setProgressCallback(ProgressCallback callback) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    progressCallback_ = callback;
+bool BackupJob::isCancelled() const {
+    return getState() == State::CANCELLED;
 }
 
-void BackupJob::setStatusCallback(StatusCallback callback) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    statusCallback_ = callback;
+int BackupJob::getProgress() const {
+    return Job::getProgress();
+}
+
+std::string BackupJob::getStatus() const {
+    return Job::getStatus();
+}
+
+std::string BackupJob::getError() const {
+    return Job::getError();
+}
+
+std::string BackupJob::getId() const {
+    return Job::getId();
 }
 
 bool BackupJob::verifyBackup() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!isRunning_) {
+    if (!isCompleted()) {
         setError("Cannot verify incomplete backup");
         return false;
     }
 
+    setStatus("Verifying backup");
+    updateProgress(0);
+
     try {
-        if (!provider_->verifyBackup(id_)) {
-            setError("Verification failed: " + provider_->getLastError());
+        // Verify each disk in the backup
+        std::vector<std::string> diskPaths;
+        if (!provider_->getVMDiskPaths(config_.vmId, diskPaths)) {
+            setError("Failed to get VM disk paths: " + provider_->getLastError());
             return false;
         }
-        status_ = "verified";
-        if (statusCallback_) {
-            statusCallback_("Verification completed successfully");
+
+        int totalDisks = diskPaths.size();
+        int verifiedDisks = 0;
+
+        for (const auto& diskPath : diskPaths) {
+            if (isCancelled()) {
+                setError("Verification cancelled");
+                return false;
+            }
+
+            if (isPaused()) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                continue;
+            }
+
+            if (!provider_->verifyDisk(diskPath)) {
+                setError("Failed to verify disk " + diskPath + ": " + provider_->getLastError());
+                return false;
+            }
+
+            verifiedDisks++;
+            updateProgress((verifiedDisks * 100) / totalDisks);
         }
+
+        setStatus("Backup verified successfully");
         return true;
     } catch (const std::exception& e) {
         setError(std::string("Verification failed: ") + e.what());
@@ -136,29 +185,185 @@ bool BackupJob::verifyBackup() {
     }
 }
 
-void BackupJob::updateProgress(double progress) {
+bool BackupJob::cleanupOldBackups() {
     std::lock_guard<std::mutex> lock(mutex_);
-    progress_ = progress;
-    if (progressCallback_) {
-        progressCallback_(static_cast<int>(progress));
+    if (!isCompleted()) {
+        setError("Cannot cleanup incomplete backup");
+        return false;
+    }
+
+    try {
+        // Get list of backup directories
+        std::vector<std::string> backupDirs;
+        if (!provider_->listBackups(backupDirs)) {
+            setError("Failed to list backups: " + provider_->getLastError());
+            return false;
+        }
+
+        // Sort backups by date
+        std::sort(backupDirs.begin(), backupDirs.end());
+
+        // Keep only the most recent N backups
+        if (backupDirs.size() > config_.maxBackups) {
+            for (size_t i = 0; i < backupDirs.size() - config_.maxBackups; ++i) {
+                if (!provider_->deleteBackup(backupDirs[i])) {
+                    setError("Failed to delete old backup: " + provider_->getLastError());
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    } catch (const std::exception& e) {
+        setError(std::string("Cleanup failed: ") + e.what());
+        return false;
     }
 }
 
-void BackupJob::setError(const std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    error_ = error;
-    status_ = "failed";
-    if (statusCallback_) {
-        statusCallback_(error);
+void BackupJob::executeBackup() {
+    try {
+        // Get VM disk paths
+        std::vector<std::string> diskPaths;
+        if (!provider_->getVMDiskPaths(config_.vmId, diskPaths)) {
+            setError("Failed to get VM disk paths: " + provider_->getLastError());
+            setState(State::FAILED);
+            return;
+        }
+
+        // Backup each disk
+        int totalDisks = diskPaths.size();
+        int backedUpDisks = 0;
+
+        for (const auto& diskPath : diskPaths) {
+            if (isCancelled()) {
+                setError("Backup cancelled");
+                setState(State::CANCELLED);
+                return;
+            }
+
+            if (isPaused()) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                continue;
+            }
+
+            if (!provider_->backupDisk(config_.vmId, diskPath, config_)) {
+                setError("Failed to backup disk " + diskPath + ": " + provider_->getLastError());
+                setState(State::FAILED);
+                return;
+            }
+
+            backedUpDisks++;
+            updateProgress((backedUpDisks * 100) / totalDisks);
+        }
+
+        // Write backup metadata
+        if (!writeBackupMetadata()) {
+            setError("Failed to write backup metadata");
+            setState(State::FAILED);
+            return;
+        }
+
+        // Cleanup old backups if needed
+        if (config_.maxBackups > 0) {
+            if (!cleanupOldBackups()) {
+                setError("Failed to cleanup old backups");
+                setState(State::FAILED);
+                return;
+            }
+        }
+
+        setState(State::COMPLETED);
+        setStatus("Backup completed successfully");
+        updateProgress(100);
+    } catch (const std::exception& e) {
+        setError(std::string("Backup failed: ") + e.what());
+        setState(State::FAILED);
     }
 }
 
-std::string BackupJob::generateId() const {
-    auto now = std::chrono::system_clock::now();
-    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now.time_since_epoch());
-    
-    std::stringstream ss;
-    ss << std::hex << now_ms.count();
-    return ss.str();
+void BackupJob::handleBackupProgress(int progress) {
+    updateProgress(progress);
+}
+
+void BackupJob::handleBackupStatus(const std::string& status) {
+    setStatus(status);
+}
+
+void BackupJob::handleBackupError(const std::string& error) {
+    setError(error);
+    setState(State::FAILED);
+}
+
+bool BackupJob::validateBackupConfig() const {
+    if (config_.vmId.empty()) {
+        return false;
+    }
+    if (config_.backupPath.empty()) {
+        return false;
+    }
+    return true;
+}
+
+bool BackupJob::createBackupDirectory() const {
+    try {
+        create_directories(config_.backupPath);
+        return true;
+    } catch (const std::exception& e) {
+        return false;
+    }
+}
+
+bool BackupJob::writeBackupMetadata() const {
+    try {
+        std::string metadataFile = config_.backupPath + "/metadata.json";
+        json metadata;
+        metadata["vmId"] = config_.vmId;
+        metadata["timestamp"] = std::chrono::system_clock::now().time_since_epoch().count();
+        metadata["config"] = {
+            {"backupPath", config_.backupPath},
+            {"enableCBT", config_.enableCBT},
+            {"incremental", config_.incremental},
+            {"retentionDays", config_.retentionDays},
+            {"maxBackups", config_.maxBackups},
+            {"compressionLevel", config_.compressionLevel},
+            {"maxConcurrentDisks", config_.maxConcurrentDisks}
+        };
+
+        std::ofstream file(metadataFile);
+        if (!file.is_open()) {
+            Logger::error("Failed to open metadata file for writing: " + metadataFile);
+            return false;
+        }
+        file << metadata.dump(4);
+        return true;
+    } catch (const std::exception& e) {
+        Logger::error("Failed to write backup metadata: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool BackupJob::readBackupMetadata() const {
+    try {
+        std::string metadataFile = config_.backupPath + "/metadata.json";
+        std::ifstream file(metadataFile);
+        if (!file.is_open()) {
+            Logger::error("Failed to open metadata file for reading: " + metadataFile);
+            return false;
+        }
+        json metadata;
+        file >> metadata;
+        return true;
+    } catch (const std::exception& e) {
+        Logger::error("Failed to read backup metadata: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool BackupJob::cleanupBackupDirectory() const {
+    try {
+        remove_all(config_.backupPath);
+        return true;
+    } catch (const std::exception& e) {
+        return false;
+    }
 } 

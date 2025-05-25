@@ -62,7 +62,7 @@ public:
 
     // Add a task with progress tracking
     template<typename F, typename... Args>
-    std::pair<std::future<typename std::result_of<F(Args...)>::type>, TaskProgress>
+    std::pair<std::future<typename std::result_of<F(Args...)>::type>, std::shared_ptr<TaskProgress>>
     addTaskWithProgress(F&& f, Args&&... args);
 
     // Add a cancellable task
@@ -150,7 +150,7 @@ auto ParallelTaskManager::addTask(F&& f, Args&&... args, TaskPriority priority)
 }
 
 template<typename F, typename... Args>
-std::pair<std::future<typename std::result_of<F(Args...)>::type>, TaskProgress>
+std::pair<std::future<typename std::result_of<F(Args...)>::type>, std::shared_ptr<TaskProgress>>
 ParallelTaskManager::addTaskWithProgress(F&& f, Args&&... args) {
     using return_type = typename std::result_of<F(Args...)>::type;
     
@@ -182,7 +182,7 @@ ParallelTaskManager::addTaskWithProgress(F&& f, Args&&... args) {
     }
     
     condition_.notify_one();
-    return {std::move(result), *progress};
+    return {std::move(result), progress};
 }
 
 template<typename F, typename... Args>

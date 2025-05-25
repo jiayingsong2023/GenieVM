@@ -1,11 +1,8 @@
 #pragma once
 
-#include "backup/vm_config.hpp"
-#include "backup/backup_job.hpp"
-#include "backup/backup_manager.hpp"
+#include "backup/job_manager.hpp"
 #include "backup/backup_scheduler.hpp"
-#include "backup/backup_verifier.hpp"
-#include "common/vmware_connection.hpp"
+#include "backup/backup_provider.hpp"
 #include "common/logger.hpp"
 #include <memory>
 #include <string>
@@ -14,23 +11,25 @@
 
 class BackupCLI {
 public:
-    explicit BackupCLI(std::shared_ptr<VMwareConnection> connection);
+    BackupCLI(std::shared_ptr<JobManager> jobManager,
+              std::shared_ptr<BackupProvider> provider);
     ~BackupCLI();
 
     void run(int argc, char* argv[]);
+    void printUsage() const;
 
 private:
-    std::shared_ptr<VMwareConnection> connection_;
-    std::shared_ptr<BackupManager> manager_;
-    std::shared_ptr<BackupScheduler> scheduler_;
-
-    void parseBackupOptions(int argc, char* argv[], BackupConfig& config);
     void handleBackupCommand(int argc, char* argv[]);
-    void handleScheduleCommand(int argc, char* argv[]);
-    void handleListCommand(int argc, char* argv[]);
-    void handleVerifyCommand(int argc, char* argv[]);
-    void handleRestoreCommand(int argc, char* argv[]);
-    void printUsage() const;
+    void handleScheduleCommand(int argc, char** argv);
+    void handleListCommand(int argc, char** argv);
+    bool handleVerifyCommand(int argc, char* argv[]);
+    bool handleRestoreCommand(int argc, char* argv[]);
+    void parseBackupOptions(int argc, char* argv[], BackupConfig& config);
     std::string formatTime(time_t time) const;
     time_t parseTime(const std::string& timeStr) const;
+
+    std::shared_ptr<JobManager> jobManager_;
+    std::shared_ptr<BackupProvider> provider_;
+    std::shared_ptr<BackupScheduler> scheduler_;
+    std::shared_ptr<VMwareConnection> connection_;
 }; 

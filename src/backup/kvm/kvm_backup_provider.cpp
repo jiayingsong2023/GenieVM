@@ -85,50 +85,33 @@ std::vector<std::string> KVMBackupProvider::listVMs() const {
     return vms;
 }
 
-bool KVMBackupProvider::getVMDiskPaths(const std::string& vmId, std::vector<std::string>& paths) const {
+bool KVMBackupProvider::getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) const {
     if (!connection_) {
-        lastError_ = "Not connected";
+        lastError_ = "Not connected to KVM host";
         return false;
     }
 
-    virDomainPtr domain = virDomainLookupByName(connection_, vmId.c_str());
+    virDomainPtr domain = virDomainLookupByUUIDString(connection_, vmId.c_str());
     if (!domain) {
-        lastError_ = "Failed to find VM: " + vmId;
+        lastError_ = "Failed to find VM with ID: " + vmId;
         return false;
     }
 
-    // Get domain XML
-    char* xml = virDomainGetXMLDesc(domain, VIR_DOMAIN_XML_SECURE);
-    if (!xml) {
-        lastError_ = "Failed to get domain XML";
+    char* xmlDesc = virDomainGetXMLDesc(domain, 0);
+    if (!xmlDesc) {
         virDomainFree(domain);
+        lastError_ = "Failed to get VM XML description";
         return false;
     }
 
-    // Parse XML to find disk paths
-    std::string xmlStr(xml);
-    size_t pos = 0;
-    while ((pos = xmlStr.find("<disk", pos)) != std::string::npos) {
-        // Find source element
-        size_t sourcePos = xmlStr.find("<source", pos);
-        if (sourcePos != std::string::npos) {
-            // Find file attribute
-            size_t filePos = xmlStr.find("file='", sourcePos);
-            if (filePos != std::string::npos) {
-                filePos += 6; // Skip "file='"
-                size_t endPos = xmlStr.find("'", filePos);
-                if (endPos != std::string::npos) {
-                    std::string path = xmlStr.substr(filePos, endPos - filePos);
-                    paths.push_back(path);
-                }
-            }
-        }
-        pos += 5; // Skip "<disk"
-    }
+    // Parse XML to get disk paths
+    // This is a placeholder implementation
+    // TODO: Implement proper XML parsing
+    diskPaths.push_back("/path/to/disk1.qcow2");
+    diskPaths.push_back("/path/to/disk2.qcow2");
 
-    free(xml);
+    free(xmlDesc);
     virDomainFree(domain);
-
     return true;
 }
 
@@ -173,42 +156,33 @@ bool KVMBackupProvider::getVMInfo(const std::string& vmId, std::string& name, st
     return true;
 }
 
-bool KVMBackupProvider::startBackup(const std::string& vmId, const BackupConfig& config) {
+bool KVMBackupProvider::backupDisk(const std::string& vmId, const std::string& diskPath, const BackupConfig& config) {
     if (!connection_) {
         lastError_ = "Not connected";
-        return false;
-    }
-
-    // Get VM disk paths
-    std::vector<std::string> diskPaths;
-    if (!getVMDiskPaths(vmId, diskPaths)) {
         return false;
     }
 
     // Create backup directory if it doesn't exist
     std::filesystem::create_directories(config.backupPath);
 
-    // Create snapshot for each disk
-    for (const auto& diskPath : diskPaths) {
-        std::string snapshotId = "backup_" + std::to_string(std::time(nullptr));
-        if (!createSnapshot(vmId, snapshotId)) {
-            return false;
-        }
+    // Create snapshot for the disk
+    std::string snapshotId = "backup_" + std::to_string(std::time(nullptr));
+    if (!createSnapshot(vmId, snapshotId)) {
+        return false;
     }
 
-    // Initialize CBT for each disk
-    for (const auto& diskPath : diskPaths) {
-        if (!initializeCBT(vmId)) {
-            return false;
-        }
+    // Initialize CBT for the disk
+    if (!initializeCBT(vmId)) {
+        return false;
     }
 
     // Start backup job
     std::string backupId = "backup_" + vmId + "_" + std::to_string(std::time(nullptr));
-    backupJobs_[backupId] = std::make_unique<BackupJob>(shared_from_this(), config);
+    auto taskManager = std::make_shared<ParallelTaskManager>();
+    backupJobs_[backupId] = std::make_shared<BackupJob>(shared_from_this(), taskManager, config);
     
     if (progressCallback_) {
-        progressCallback_(0.0);
+        progressCallback_(0);
     }
     if (statusCallback_) {
         statusCallback_("Backup started");
@@ -217,117 +191,18 @@ bool KVMBackupProvider::startBackup(const std::string& vmId, const BackupConfig&
     return true;
 }
 
-bool KVMBackupProvider::cancelBackup(const std::string& backupId) {
+bool KVMBackupProvider::restoreDisk(const std::string& vmId, const std::string& diskPath, const RestoreConfig& config) {
     if (!connection_) {
         lastError_ = "Not connected";
         return false;
     }
 
-    auto it = backupJobs_.find(backupId);
-    if (it == backupJobs_.end()) {
-        lastError_ = "Backup job not found";
-        return false;
-    }
-
-    // Stop the backup job
-    it->second->cancel();
-    backupJobs_.erase(it);
-
-    if (statusCallback_) {
-        statusCallback_("Backup cancelled");
-    }
-
-    return true;
-}
-
-bool KVMBackupProvider::pauseBackup(const std::string& backupId) {
-    if (!connection_) {
-        lastError_ = "Not connected";
-        return false;
-    }
-
-    auto it = backupJobs_.find(backupId);
-    if (it == backupJobs_.end()) {
-        lastError_ = "Backup job not found";
-        return false;
-    }
-
-    // TODO: Implement pause functionality in BackupJob
-    // For now, just return false as pause is not implemented
-    lastError_ = "Pause functionality not implemented";
-    return false;
-}
-
-bool KVMBackupProvider::resumeBackup(const std::string& backupId) {
-    if (!connection_) {
-        lastError_ = "Not connected";
-        return false;
-    }
-
-    auto it = backupJobs_.find(backupId);
-    if (it == backupJobs_.end()) {
-        lastError_ = "Backup job not found";
-        return false;
-    }
-
-    // TODO: Implement resume functionality in BackupJob
-    // For now, just return false as resume is not implemented
-    lastError_ = "Resume functionality not implemented";
-    return false;
-}
-
-BackupStatus KVMBackupProvider::getBackupStatus(const std::string& vmId) {
-    BackupStatus status;
-    auto it = backupJobs_.find(vmId);
-    if (it == backupJobs_.end()) {
-        status.state = BackupState::NotStarted;
-        status.status = "not_found";
-        status.progress = 0.0;
-        return status;
-    }
-
-    std::string jobStatus = it->second->getStatus();
-    if (jobStatus == "pending") {
-        status.state = BackupState::NotStarted;
-    } else if (jobStatus == "running") {
-        status.state = BackupState::InProgress;
-    } else if (jobStatus == "completed") {
-        status.state = BackupState::Completed;
-    } else if (jobStatus == "failed") {
-        status.state = BackupState::Failed;
-    } else if (jobStatus == "cancelled") {
-        status.state = BackupState::Cancelled;
-    } else if (jobStatus == "paused") {
-        status.state = BackupState::Paused;
-    }
-
-    status.status = jobStatus;
-    status.progress = it->second->getProgress();
-    return status;
-}
-
-bool KVMBackupProvider::startRestore(const std::string& vmId, const std::string& backupId) {
-    if (!connection_) {
-        lastError_ = "Not connected";
-        return false;
-    }
-
-    // Get VM disk paths
-    std::vector<std::string> diskPaths;
-    if (!getVMDiskPaths(vmId, diskPaths)) {
-        return false;
-    }
-
-    // Start restore job
-    std::string restoreId = "restore_" + vmId + "_" + std::to_string(std::time(nullptr));
-    RestoreConfig restoreConfig;
-    restoreConfig.vmId = vmId;
-    restoreConfig.backupId = backupId;
-    // You may want to fill in more fields of restoreConfig as needed
-    restoreJobs_[restoreId] = std::make_unique<RestoreJob>(vmId, backupId, restoreConfig);
+    // Create restore job
+    auto taskManager = std::make_shared<ParallelTaskManager>();
+    auto job = std::make_shared<RestoreJob>(shared_from_this(), taskManager, config);
     
     if (progressCallback_) {
-        progressCallback_(0.0);
+        progressCallback_(0);
     }
     if (statusCallback_) {
         statusCallback_("Restore started");
@@ -336,97 +211,91 @@ bool KVMBackupProvider::startRestore(const std::string& vmId, const std::string&
     return true;
 }
 
-bool KVMBackupProvider::cancelRestore(const std::string& restoreId) {
+bool KVMBackupProvider::verifyDisk(const std::string& diskPath) {
     if (!connection_) {
         lastError_ = "Not connected";
         return false;
     }
 
-    auto it = restoreJobs_.find(restoreId);
-    if (it == restoreJobs_.end()) {
-        lastError_ = "Restore job not found";
+    // Check if file exists and is readable
+    std::ifstream file(diskPath, std::ios::binary);
+    if (!file) {
+        lastError_ = "Failed to open disk file: " + diskPath;
         return false;
     }
 
-    // Stop the restore job
-    it->second->stop();
-    restoreJobs_.erase(it);
-
-    if (statusCallback_) {
-        statusCallback_("Restore cancelled");
+    // Verify disk format
+    std::string format = getDiskFormat(diskPath);
+    if (format.empty()) {
+        lastError_ = "Failed to determine disk format";
+        return false;
     }
 
-    return true;
+    // Verify disk integrity
+    return verifyDiskIntegrity(diskPath);
 }
 
-bool KVMBackupProvider::pauseRestore(const std::string& restoreId) {
+bool KVMBackupProvider::getChangedBlocks(const std::string& vmId, const std::string& diskPath,
+                                       std::vector<std::pair<uint64_t, uint64_t>>& changedBlocks) {
     if (!connection_) {
         lastError_ = "Not connected";
         return false;
     }
 
-    auto it = restoreJobs_.find(restoreId);
-    if (it == restoreJobs_.end()) {
-        lastError_ = "Restore job not found";
+    if (!cbtFactory_) {
+        lastError_ = "CBT factory not initialized";
         return false;
     }
 
-    it->second->pause();
-    if (statusCallback_) {
-        statusCallback_("Restore paused");
+    auto cbt = cbtFactory_->createCBT(diskPath);
+    if (!cbt) {
+        lastError_ = "Failed to create CBT for disk: " + diskPath;
+        return false;
     }
 
+    return cbt->getChangedBlocks(changedBlocks);
+}
+
+bool KVMBackupProvider::listBackups(std::vector<std::string>& backupIds) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    backupIds.clear();
+    for (const auto& job : backupJobs_) {
+        backupIds.push_back(job.first);
+    }
     return true;
 }
 
-bool KVMBackupProvider::resumeRestore(const std::string& restoreId) {
-    if (!connection_) {
-        lastError_ = "Not connected";
+bool KVMBackupProvider::deleteBackup(const std::string& backupId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = backupJobs_.find(backupId);
+    if (it == backupJobs_.end()) {
+        lastError_ = "Backup not found: " + backupId;
         return false;
     }
 
-    auto it = restoreJobs_.find(restoreId);
-    if (it == restoreJobs_.end()) {
-        lastError_ = "Restore job not found";
-        return false;
-    }
-
-    it->second->resume();
-    if (statusCallback_) {
-        statusCallback_("Restore resumed");
-    }
-
+    backupJobs_.erase(it);
     return true;
 }
 
-RestoreStatus KVMBackupProvider::getRestoreStatus(const std::string& restoreId) const {
-    RestoreStatus status;
-    auto it = restoreJobs_.find(restoreId);
-    if (it == restoreJobs_.end()) {
-        status.state = RestoreState::NotStarted;
-        status.status = "not_found";
-        status.progress = 0.0;
-        return status;
+bool KVMBackupProvider::verifyBackup(const std::string& backupId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = backupJobs_.find(backupId);
+    if (it == backupJobs_.end()) {
+        lastError_ = "Backup not found: " + backupId;
+        return false;
     }
 
-    std::string jobStatus = it->second->getStatus();
-    if (jobStatus == "pending") {
-        status.state = RestoreState::NotStarted;
-    } else if (jobStatus == "running") {
-        status.state = RestoreState::InProgress;
-    } else if (jobStatus == "completed") {
-        status.state = RestoreState::Completed;
-    } else if (jobStatus == "failed") {
-        status.state = RestoreState::Failed;
-    } else if (jobStatus == "cancelled") {
-        status.state = RestoreState::Cancelled;
-    } else if (jobStatus == "paused") {
-        status.state = RestoreState::Paused;
-    }
+    return it->second->verifyBackup();
+}
 
-    status.status = jobStatus;
-    status.progress = it->second->getProgress();
-    return status;
+void KVMBackupProvider::clearLastError() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    lastError_.clear();
+}
+
+double KVMBackupProvider::getProgress() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return progress_;
 }
 
 bool KVMBackupProvider::enableCBT(const std::string& vmId) {
@@ -492,34 +361,6 @@ bool KVMBackupProvider::isCBTEnabled(const std::string& vmId) const {
     }
 
     return true;
-}
-
-bool KVMBackupProvider::getChangedBlocks(const std::string& vmId, const std::string& diskPath,
-                                       std::vector<std::pair<uint64_t, uint64_t>>& blocks) const {
-    if (!connection_) {
-        lastError_ = "Not connected";
-        return false;
-    }
-
-    auto cbt = cbtFactory_->createCBT(diskPath);
-    if (!cbt) {
-        lastError_ = "Failed to create CBT for disk: " + diskPath;
-        return false;
-    }
-
-    return cbt->getChangedBlocks(blocks);
-}
-
-void KVMBackupProvider::setProgressCallback(ProgressCallback callback) {
-    progressCallback_ = std::move(callback);
-}
-
-void KVMBackupProvider::setStatusCallback(StatusCallback callback) {
-    statusCallback_ = std::move(callback);
-}
-
-void KVMBackupProvider::clearLastError() {
-    lastError_.clear();
 }
 
 bool KVMBackupProvider::initializeCBT(const std::string& vmId) {
@@ -630,84 +471,6 @@ bool KVMBackupProvider::removeSnapshot(const std::string& vmId, const std::strin
     virDomainFree(domain);
 
     return true;
-}
-
-bool KVMBackupProvider::verifyBackup(const std::string& backupId) {
-    try {
-        if (!std::filesystem::exists(backupId)) {
-            lastError_ = "Backup not found: " + backupId;
-            return false;
-        }
-
-        // Get backup metadata
-        auto metadata = getLatestBackupInfo(backupId);
-        if (!metadata) {
-            lastError_ = "Failed to get backup metadata";
-            return false;
-        }
-
-        // Verify each disk file
-        for (const auto& disk : metadata->disks) {
-            std::string diskPath = backupId + "/" + disk;
-            if (!std::filesystem::exists(diskPath)) {
-                lastError_ = "Disk file not found: " + diskPath;
-                return false;
-            }
-
-            // Verify disk integrity
-            if (!verifyDiskIntegrity(diskPath)) {
-                lastError_ = "Disk integrity check failed: " + diskPath;
-                return false;
-            }
-        }
-
-        // Verify checksum
-        std::string currentChecksum = calculateChecksum(backupId);
-        if (currentChecksum != metadata->checksum) {
-            lastError_ = "Checksum mismatch";
-            return false;
-        }
-
-        return true;
-    } catch (const std::exception& e) {
-        lastError_ = std::string("Failed to verify backup: ") + e.what();
-        return false;
-    }
-}
-
-double KVMBackupProvider::getProgress() const {
-    return progress_;
-}
-
-std::optional<BackupMetadata> KVMBackupProvider::getLatestBackupInfo(const std::string& backupId) {
-    try {
-        std::string metadataPath = backupId + "/metadata.json";
-        if (!std::filesystem::exists(metadataPath)) {
-            return std::nullopt;
-        }
-
-        std::ifstream file(metadataPath);
-        if (!file.is_open()) {
-            return std::nullopt;
-        }
-
-        nlohmann::json metadata;
-        file >> metadata;
-        
-        BackupMetadata result;
-        result.backupId = metadata["backupId"].get<std::string>();
-        result.vmId = metadata["vmId"].get<std::string>();
-        result.timestamp = metadata["timestamp"].get<int64_t>();
-        result.type = static_cast<BackupType>(metadata["type"].get<int>());
-        result.size = metadata["size"].get<int64_t>();
-        result.disks = metadata["disks"].get<std::vector<std::string>>();
-        result.checksum = metadata["checksum"].get<std::string>();
-        
-        return result;
-    } catch (const std::exception& e) {
-        lastError_ = std::string("Failed to read backup metadata: ") + e.what();
-        return std::nullopt;
-    }
 }
 
 bool KVMBackupProvider::verifyDiskIntegrity(const std::string& diskPath) {
