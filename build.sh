@@ -3,6 +3,14 @@
 # Exit on error
 set -e
 
+# Save original LD_LIBRARY_PATH
+ORIGINAL_LD_LIBRARY_PATH=$LD_LIBRARY_PATH
+ORIGINAL_LD_PRELOAD=$LD_PRELOAD
+
+# Clear VDDK-related environment variables for build
+unset LD_LIBRARY_PATH
+unset LD_PRELOAD
+
 # Function to clean build directory
 clean() {
     echo "Cleaning build directory..."
@@ -16,40 +24,33 @@ clean() {
 
 # Function to build the project
 build() {
-    # Verify VDDK paths
     echo "Checking VDDK paths..."
-    if [ ! -d "/usr/local/vddk/include" ]; then
-        echo "Error: VDDK include directory not found at /usr/local/vddk/include"
+    if [ ! -d "/usr/local/vddk" ]; then
+        echo "Error: VDDK not found at /usr/local/vddk"
         exit 1
     fi
 
-    if [ ! -f "/usr/local/vddk/include/vixDiskLib.h" ]; then
-        echo "Error: vixDiskLib.h not found at /usr/local/vddk/include/vixDiskLib.h"
-        exit 1
-    fi
-
-    # Check compiler version
     echo "Checking compiler version..."
     g++ --version
 
     # Create build directory if it doesn't exist
     mkdir -p build
-
-    # Change to build directory
     cd build
 
-    # Run CMake with the correct paths and verbose output
-    cmake -DVDDK_ROOT=/usr/local/vddk \
-          -DVSPHERE_SDK_ROOT=/usr/local/vSphereSDK \
-          -DCMAKE_VERBOSE_MAKEFILE=ON \
-          -DCMAKE_CXX_COMPILER=g++ \
-          -DCMAKE_CXX_FLAGS="-std=gnu++17" \
-          ..
+    # Run CMake with system libraries
+    cmake ..
 
-    # Build the project with verbose output
-    make VERBOSE=1
+    # Build the project
+    make -j$(nproc)
 
-    echo "Build completed successfully!"
+    # Restore original environment variables
+    export LD_LIBRARY_PATH=$ORIGINAL_LD_LIBRARY_PATH
+    export LD_PRELOAD=$ORIGINAL_LD_PRELOAD
+
+    # Make the run script executable
+    chmod +x ../scripts/run_genievm.sh
+
+    echo "Build completed. Use ./scripts/run_genievm.sh to run the program."
 }
 
 # Function to rebuild (clean + build)
