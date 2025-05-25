@@ -6,6 +6,7 @@
 #include <cstring>
 #include <chrono>
 #include <thread>
+#include "vddk_wrapper/vddk_wrapper.h"
 
 DiskRestore::DiskRestore(std::shared_ptr<VMwareConnection> connection)
     : connection_(connection)
@@ -161,41 +162,37 @@ bool DiskRestore::verifyRestore() {
     }
 
     // Open target disk to verify
-    VixError vixError = VixDiskLib_Open(
+    VixError vixError = VixDiskLib_OpenWrapper(
         connectionHandle_,
         targetPath_.c_str(),
         VIXDISKLIB_FLAG_OPEN_UNBUFFERED,
         &targetHandle_
     );
 
-    if (VIX_FAILED(vixError)) {
+    if (vixError != VIX_OK) {
         logError("Failed to open target disk for verification", vixError);
-        VixDiskLib_FreeInfo(backupInfo);
+        VixDiskLib_FreeInfoWrapper(backupInfo);
         return false;
     }
 
-    vixError = VixDiskLib_GetInfo(targetHandle_, &targetInfo);
-    if (VIX_FAILED(vixError)) {
+    vixError = VixDiskLib_GetInfoWrapper(targetHandle_, &targetInfo);
+    if (vixError != VIX_OK) {
         logError("Failed to get target disk info", vixError);
-        VixDiskLib_FreeInfo(backupInfo);
-        VixDiskLib_Close(targetHandle_);
+        VixDiskLib_FreeInfoWrapper(backupInfo);
+        VixDiskLib_CloseWrapper(&targetHandle_);
         return false;
     }
 
     // Compare disk sizes
     bool sizeMatch = (backupInfo->capacity == targetInfo->capacity);
-    VixDiskLib_FreeInfo(backupInfo);
-    VixDiskLib_FreeInfo(targetInfo);
-    VixDiskLib_Close(targetHandle_);
+    VixDiskLib_FreeInfoWrapper(backupInfo);
+    VixDiskLib_FreeInfoWrapper(targetInfo);
+    VixDiskLib_CloseWrapper(&targetHandle_);
 
     if (!sizeMatch) {
         Logger::error("Disk size mismatch during verification");
         return false;
     }
-
-    // TODO: Add checksum verification if needed
-    // This would involve reading both disks and comparing checksums
-    // For now, we're just verifying the disk sizes match
 
     return true;
 }
@@ -344,4 +341,117 @@ void DiskRestore::logError(const std::string& operation, VixError vixError) {
     char* errorMsg = VixDiskLib_GetErrorText(vixError, nullptr);
     Logger::error(operation + ": " + std::string(errorMsg));
     VixDiskLib_FreeErrorText(errorMsg);
+}
+
+bool DiskRestore::restoreDisk(const std::string& backupPath, const std::string& targetPath) {
+    VixDiskLibInfo* backupInfo = nullptr;
+    VixDiskLibInfo* targetInfo = nullptr;
+
+    VixError vixError = VixDiskLib_OpenWrapper(connection_->getVDDKConnection(),
+                                             backupPath.c_str(),
+                                             VIXDISKLIB_FLAG_OPEN_UNBUFFERED,
+                                             &backupHandle_);
+    if (vixError != VIX_OK) {
+        handleError(vixError);
+        return false;
+    }
+
+    vixError = VixDiskLib_GetInfoWrapper(backupHandle_, &backupInfo);
+    if (vixError != VIX_OK) {
+        VixDiskLib_FreeInfoWrapper(backupInfo);
+        VixDiskLib_CloseWrapper(&backupHandle_);
+        handleError(vixError);
+        return false;
+    }
+
+    vixError = VixDiskLib_OpenWrapper(connection_->getVDDKConnection(),
+                                    targetPath.c_str(),
+                                    VIXDISKLIB_FLAG_OPEN_UNBUFFERED,
+                                    &targetHandle_);
+    if (vixError != VIX_OK) {
+        VixDiskLib_FreeInfoWrapper(backupInfo);
+        VixDiskLib_CloseWrapper(&backupHandle_);
+        handleError(vixError);
+        return false;
+    }
+
+    vixError = VixDiskLib_GetInfoWrapper(targetHandle_, &targetInfo);
+    if (vixError != VIX_OK) {
+        VixDiskLib_FreeInfoWrapper(backupInfo);
+        VixDiskLib_FreeInfoWrapper(targetInfo);
+        VixDiskLib_CloseWrapper(&backupHandle_);
+        VixDiskLib_CloseWrapper(&targetHandle_);
+        handleError(vixError);
+        return false;
+    }
+
+    // Verify disk sizes match
+    if (backupInfo->capacity != targetInfo->capacity) {
+        VixDiskLib_FreeInfoWrapper(backupInfo);
+        VixDiskLib_FreeInfoWrapper(targetInfo);
+        VixDiskLib_CloseWrapper(&backupHandle_);
+        VixDiskLib_CloseWrapper(&targetHandle_);
+        error_ = "Disk sizes do not match";
+        return false;
+    }
+
+    VixDiskLib_FreeInfoWrapper(backupInfo);
+    VixDiskLib_FreeInfoWrapper(targetInfo);
+
+    // Restore the disk
+    VixDiskLibBlockList* blockList = nullptr;
+    vixError = VixDiskLib_QueryAllocatedBlocksWrapper(backupHandle_,
+                                                    0,
+                                                    VIXDISKLIB_SECTOR_SIZE,
+                                                    &blockList);
+    if (vixError != VIX_OK) {
+        VixDiskLib_CloseWrapper(&backupHandle_);
+        VixDiskLib_CloseWrapper(&targetHandle_);
+        handleError(vixError);
+        return false;
+    }
+
+    // Copy allocated blocks
+    for (int i = 0; i < blockList->numBlocks; i++) {
+        std::vector<uint8_t> buffer(blockList->blocks[i].length * VIXDISKLIB_SECTOR_SIZE);
+        
+        vixError = VixDiskLib_ReadWrapper(backupHandle_,
+                                        blockList->blocks[i].offset,
+                                        blockList->blocks[i].length,
+                                        buffer.data());
+        if (vixError != VIX_OK) {
+            VixDiskLib_FreeBlockListWrapper(blockList);
+            VixDiskLib_CloseWrapper(&backupHandle_);
+            VixDiskLib_CloseWrapper(&targetHandle_);
+            handleError(vixError);
+            return false;
+        }
+
+        vixError = VixDiskLib_WriteWrapper(targetHandle_,
+                                         blockList->blocks[i].offset,
+                                         blockList->blocks[i].length,
+                                         buffer.data());
+        if (vixError != VIX_OK) {
+            VixDiskLib_FreeBlockListWrapper(blockList);
+            VixDiskLib_CloseWrapper(&backupHandle_);
+            VixDiskLib_CloseWrapper(&targetHandle_);
+            handleError(vixError);
+            return false;
+        }
+    }
+
+    VixDiskLib_FreeBlockListWrapper(blockList);
+    VixDiskLib_CloseWrapper(&backupHandle_);
+    VixDiskLib_CloseWrapper(&targetHandle_);
+    return true;
+}
+
+void DiskRestore::handleError(VixError error) {
+    char* errorMsg = VixDiskLib_GetErrorTextWrapper(error, nullptr, 0);
+    if (errorMsg) {
+        error_ = errorMsg;
+        VixDiskLib_FreeErrorTextWrapper(errorMsg);
+    } else {
+        error_ = "Unknown VDDK error: " + std::to_string(error);
+    }
 }

@@ -1,290 +1,184 @@
 #include "backup/disk_backup.hpp"
-#include "common/logger.hpp"
-#include <vixDiskLib.h>
-#include <stdexcept>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <chrono>
+#include <thread>
+#include <algorithm>
 #include <filesystem>
-#include <vector>
+#include <iostream>
 
-DiskBackup::DiskBackup(std::shared_ptr<VMwareConnection> connection)
-    : connection_(connection)
-    , progress_(0.0)
-    , sourceDisk_(nullptr)
-    , backupDisk_(nullptr)
-    , isRunning_(false)
-    , isPaused_(false) {
+namespace fs = std::filesystem;
+
+// VDDK constants
+#define VIXDISKLIB_VERSION_MAJOR 8
+#define VIXDISKLIB_VERSION_MINOR 0
+
+// VDDK structure definitions
+struct VDDKCreateParamsImpl {
+    uint32_t adapterType;
+    uint32_t diskType;
+};
+
+struct VDDKInfoImpl {
+    uint64_t capacity;
+};
+
+DiskBackup::DiskBackup()
+    : sourceHandle_(nullptr)
+    , targetHandle_(nullptr) {
+    // Initialize VDDK
+    VixError err = VixDiskLib_InitWrapper(VIXDISKLIB_VERSION_MAJOR,
+                                        VIXDISKLIB_VERSION_MINOR,
+                                        nullptr);
+    if (VIX_FAILED(err)) {
+        throw std::runtime_error("Failed to initialize VDDK");
+    }
 }
 
 DiskBackup::~DiskBackup() {
-    if (isRunning_) {
-        cancelBackup("");
-    }
     closeDisks();
+    VixDiskLib_ExitWrapper();
 }
 
-bool DiskBackup::initialize() {
-    if (!connection_) {
-        lastError_ = "No connection available";
-        return false;
-    }
-    return connection_->initializeVDDK();
-}
-
-bool DiskBackup::startBackup(const std::string& vmId, const BackupConfig& config) {
-    if (isRunning_) {
-        lastError_ = "Backup already in progress";
+bool DiskBackup::openDisks(const std::string& sourcePath, const std::string& targetPath, uint64_t flags) {
+    // Open source disk
+    VixError err = VixDiskLib_OpenWrapper(nullptr, sourcePath.c_str(), flags, &sourceHandle_);
+    if (VIX_FAILED(err)) {
+        std::cerr << "Failed to open source disk: " << sourcePath << std::endl;
         return false;
     }
 
-    sourcePath_ = config.sourcePath;
-    backupPath_ = config.backupPath;
-
-    if (!openDisks()) {
-        return false;
-    }
-
-    isRunning_ = true;
-    isPaused_ = false;
-
-    bool result = false;
-    if (config.incremental) {
-        result = backupIncremental();
-    } else {
-        result = backupFull();
-    }
-
-    if (!result) {
-        isRunning_ = false;
-        closeDisks();
-    }
-
-    return result;
-}
-
-bool DiskBackup::cancelBackup(const std::string& backupId) {
-    if (!isRunning_) {
-        return true;
-    }
-
-    isRunning_ = false;
-    closeDisks();
-    return true;
-}
-
-bool DiskBackup::pauseBackup(const std::string& backupId) {
-    if (!isRunning_ || isPaused_) {
-        return false;
-    }
-
-    isPaused_ = true;
-    return true;
-}
-
-bool DiskBackup::resumeBackup(const std::string& backupId) {
-    if (!isRunning_ || !isPaused_) {
-        return false;
-    }
-
-    isPaused_ = false;
-    return true;
-}
-
-bool DiskBackup::getBackupStatus(const std::string& backupId, std::string& status, double& progress) const {
-    if (!isRunning_) {
-        status = "Not running";
-        progress = 0.0;
-        return true;
-    }
-
-    if (isPaused_) {
-        status = "Paused";
-    } else {
-        status = "Running";
-    }
-
-    progress = progress_;
-    return true;
-}
-
-void DiskBackup::setProgressCallback(ProgressCallback callback) {
-    progressCallback_ = std::move(callback);
-}
-
-void DiskBackup::setStatusCallback(std::function<void(const std::string&)> callback) {
-    statusCallback_ = std::move(callback);
-}
-
-bool DiskBackup::openDisks() {
+    // Create target disk
     VixDiskLibCreateParams createParams;
     memset(&createParams, 0, sizeof(createParams));
-    createParams.adapterType = VIXDISKLIB_ADAPTER_IDE;
-    createParams.diskType = VIXDISKLIB_DISK_MONOLITHIC_FLAT;
+    createParams.diskType = static_cast<VixDiskLibDiskType>(VIXDISKLIB_DISK_MONOLITHIC_SPARSE);
+    createParams.adapterType = static_cast<VixDiskLibAdapterType>(VIXDISKLIB_ADAPTER_SCSI_BUSLOGIC);
+    createParams.hwVersion = VIXDISKLIB_HWVERSION_WORKSTATION_5;
 
-    VixError error = VixDiskLib_Open(connection_->getVDDKConnection(),
-                                    const_cast<char*>(sourcePath_.c_str()),
-                                    VIXDISKLIB_FLAG_OPEN_UNBUFFERED,
-                                    &sourceDisk_);
-    if (VIX_FAILED(error)) {
-        lastError_ = "Failed to open source disk";
+    err = VixDiskLib_CreateWrapper(nullptr, targetPath.c_str(), &createParams,
+                                 nullptr, nullptr);
+    if (VIX_FAILED(err)) {
+        std::cerr << "Failed to create target disk: " << targetPath << std::endl;
+        VixDiskLib_CloseWrapper(&sourceHandle_);
         return false;
     }
 
-    error = VixDiskLib_Create(connection_->getVDDKConnection(),
-                             const_cast<char*>(backupPath_.c_str()),
-                             &createParams,
-                             progressFunc,
-                             this);
-    if (VIX_FAILED(error)) {
-        VixDiskLib_Close(sourceDisk_);
-        sourceDisk_ = nullptr;
-        lastError_ = "Failed to create backup disk";
+    // Open target disk
+    err = VixDiskLib_OpenWrapper(nullptr, targetPath.c_str(), flags, &targetHandle_);
+    if (VIX_FAILED(err)) {
+        std::cerr << "Failed to open target disk: " << targetPath << std::endl;
+        VixDiskLib_CloseWrapper(&sourceHandle_);
         return false;
     }
 
-    error = VixDiskLib_Open(connection_->getVDDKConnection(),
-                           const_cast<char*>(backupPath_.c_str()),
-                           VIXDISKLIB_FLAG_OPEN_UNBUFFERED,
-                           &backupDisk_);
-    if (VIX_FAILED(error)) {
-        VixDiskLib_Close(sourceDisk_);
-        sourceDisk_ = nullptr;
-        lastError_ = "Failed to open backup disk";
+    return true;
+}
+
+bool DiskBackup::backupDisk(std::function<void(int)> progressCallback) {
+    if (!sourceHandle_ || !targetHandle_) {
+        std::cerr << "Source or target disk not opened" << std::endl;
         return false;
     }
 
+    // Get disk info
+    VixDiskLibInfo* diskInfo = nullptr;
+    VixError err = VixDiskLib_GetInfoWrapper(sourceHandle_, &diskInfo);
+    if (VIX_FAILED(err)) {
+        std::cerr << "Failed to get disk info" << std::endl;
+        return false;
+    }
+
+    // Get disk capacity
+    uint64_t capacity = diskInfo->capacity;
+    uint64_t totalSectors = capacity / VIXDISKLIB_SECTOR_SIZE;
+    uint64_t sectorsProcessed = 0;
+
+    // Read and write in chunks
+    const uint64_t CHUNK_SIZE = 1024 * 1024; // 1MB chunks
+    std::vector<uint8_t> buffer(CHUNK_SIZE);
+    uint64_t sectorsPerChunk = CHUNK_SIZE / VIXDISKLIB_SECTOR_SIZE;
+
+    while (sectorsProcessed < totalSectors) {
+        uint64_t sectorsToProcess = std::min(sectorsPerChunk, totalSectors - sectorsProcessed);
+        
+        // Read from source
+        err = VixDiskLib_ReadWrapper(sourceHandle_, sectorsProcessed, sectorsToProcess, buffer.data());
+        if (VIX_FAILED(err)) {
+            std::cerr << "Failed to read from source disk" << std::endl;
+            VixDiskLib_FreeInfoWrapper(diskInfo);
+            return false;
+        }
+
+        // Write to target
+        err = VixDiskLib_WriteWrapper(targetHandle_, sectorsProcessed, sectorsToProcess, buffer.data());
+        if (VIX_FAILED(err)) {
+            std::cerr << "Failed to write to target disk" << std::endl;
+            VixDiskLib_FreeInfoWrapper(diskInfo);
+            return false;
+        }
+
+        sectorsProcessed += sectorsToProcess;
+        
+        // Report progress
+        int progress = static_cast<int>((sectorsProcessed * 100) / totalSectors);
+        if (progressCallback) {
+            progressCallback(progress);
+        }
+    }
+
+    VixDiskLib_FreeInfoWrapper(diskInfo);
+    return true;
+}
+
+bool DiskBackup::verifyBackup() {
+    if (!sourceHandle_ || !targetHandle_) {
+        std::cerr << "Source or target disk not opened" << std::endl;
+        return false;
+    }
+
+    // Get disk info for both source and target
+    VixDiskLibInfo* sourceInfo = nullptr;
+    VixDiskLibInfo* targetInfo = nullptr;
+    
+    VixError err = VixDiskLib_GetInfoWrapper(sourceHandle_, &sourceInfo);
+    if (VIX_FAILED(err)) {
+        std::cerr << "Failed to get source disk info" << std::endl;
+        return false;
+    }
+
+    err = VixDiskLib_GetInfoWrapper(targetHandle_, &targetInfo);
+    if (VIX_FAILED(err)) {
+        std::cerr << "Failed to get target disk info" << std::endl;
+        VixDiskLib_FreeInfoWrapper(sourceInfo);
+        return false;
+    }
+
+    // Compare disk capacities
+    if (sourceInfo->capacity != targetInfo->capacity) {
+        std::cerr << "Disk capacity mismatch" << std::endl;
+        VixDiskLib_FreeInfoWrapper(sourceInfo);
+        VixDiskLib_FreeInfoWrapper(targetInfo);
+        return false;
+    }
+
+    VixDiskLib_FreeInfoWrapper(sourceInfo);
+    VixDiskLib_FreeInfoWrapper(targetInfo);
     return true;
 }
 
 void DiskBackup::closeDisks() {
-    if (sourceDisk_) {
-        VixDiskLib_Close(sourceDisk_);
-        sourceDisk_ = nullptr;
+    if (sourceHandle_) {
+        VixDiskLib_CloseWrapper(&sourceHandle_);
+        sourceHandle_ = nullptr;
     }
-    if (backupDisk_) {
-        VixDiskLib_Close(backupDisk_);
-        backupDisk_ = nullptr;
+    if (targetHandle_) {
+        VixDiskLib_CloseWrapper(&targetHandle_);
+        targetHandle_ = nullptr;
     }
-    connection_->disconnectFromDisk();
 }
 
-bool DiskBackup::backupFull() {
-    VixDiskLibCreateParams createParams;
-    memset(&createParams, 0, sizeof(createParams));
-    createParams.adapterType = VIXDISKLIB_ADAPTER_IDE;
-    createParams.diskType = VIXDISKLIB_DISK_MONOLITHIC_FLAT;
-
-    VixError error = VixDiskLib_Clone(connection_->getVDDKConnection(),
-                                     sourcePath_.c_str(),
-                                     connection_->getVDDKConnection(),
-                                     backupPath_.c_str(),
-                                     &createParams,
-                                     progressFunc,
-                                     this,
-                                     TRUE);
-    if (VIX_FAILED(error)) {
-        lastError_ = "Failed to clone disk";
-        return false;
-    }
-    return true;
-}
-
-bool DiskBackup::backupIncremental() {
-    VixDiskLibBlockList* blockList = nullptr;
-    VixError error = VixDiskLib_QueryAllocatedBlocks(sourceDisk_,
-                                                    0,  // start sector
-                                                    0,  // end sector
-                                                    0,  // sector size
-                                                    &blockList);
-    if (VIX_FAILED(error)) {
-        lastError_ = "Failed to query allocated blocks";
-        return false;
-    }
-
-    bool result = copyBlocks(blockList);
-    VixDiskLib_FreeBlockList(blockList);
-    return result;
-}
-
-bool DiskBackup::copyBlocks(VixDiskLibBlockList* blockList) {
-    if (!blockList) {
-        return false;
-    }
-
-    for (size_t i = 0; i < blockList->numBlocks; i++) {
-        if (blockList->blocks[i].length > 0) {
-            // Allocate buffer for reading
-            std::vector<uint8_t> buffer(blockList->blocks[i].length * VIXDISKLIB_SECTOR_SIZE);
-            
-            VixError error = VixDiskLib_Read(sourceDisk_,
-                                            blockList->blocks[i].offset,
-                                            blockList->blocks[i].length,
-                                            buffer.data());
-            if (VIX_FAILED(error)) {
-                lastError_ = "Failed to read blocks";
-                return false;
-            }
-
-            error = VixDiskLib_Write(backupDisk_,
-                                    blockList->blocks[i].offset,
-                                    blockList->blocks[i].length,
-                                    buffer.data());
-            if (VIX_FAILED(error)) {
-                lastError_ = "Failed to write blocks";
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
-
-bool DiskBackup::restore() {
-    VixDiskLibCreateParams createParams;
-    memset(&createParams, 0, sizeof(createParams));
-    createParams.adapterType = VIXDISKLIB_ADAPTER_IDE;
-    createParams.diskType = VIXDISKLIB_DISK_MONOLITHIC_FLAT;
-
-    VixError error = VixDiskLib_Open(connection_->getVDDKConnection(),
-                                    const_cast<char*>(backupPath_.c_str()),
-                                    VIXDISKLIB_FLAG_OPEN_UNBUFFERED,
-                                    &backupDisk_);
-    if (VIX_FAILED(error)) {
-        lastError_ = "Failed to open backup disk";
-        return false;
-    }
-
-    error = VixDiskLib_Open(connection_->getVDDKConnection(),
-                           const_cast<char*>(sourcePath_.c_str()),
-                           VIXDISKLIB_FLAG_OPEN_UNBUFFERED,
-                           &sourceDisk_);
-    if (VIX_FAILED(error)) {
-        VixDiskLib_Close(backupDisk_);
-        backupDisk_ = nullptr;
-        lastError_ = "Failed to open source disk";
-        return false;
-    }
-
-    error = VixDiskLib_Clone(connection_->getVDDKConnection(),
-                            backupPath_.c_str(),
-                            connection_->getVDDKConnection(),
-                            sourcePath_.c_str(),
-                            &createParams,
-                            progressFunc,
-                            this,
-                            TRUE);
-    if (VIX_FAILED(error)) {
-        lastError_ = "Failed to restore disk";
-        return false;
-    }
-
-    return true;
-}
-
-char DiskBackup::progressFunc(void* data, int percent) {
-    auto* backup = static_cast<DiskBackup*>(data);
-    backup->progress_ = static_cast<double>(percent) / 100.0;
-    if (backup->progressCallback_) {
-        backup->progressCallback_(backup->progress_);
-    }
-    return 0;
+std::string DiskBackup::getLastError() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return lastError_;
 } 

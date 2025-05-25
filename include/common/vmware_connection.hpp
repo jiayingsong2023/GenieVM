@@ -1,14 +1,20 @@
-#pragma once
+#ifndef VMWARE_CONNECTION_HPP
+#define VMWARE_CONNECTION_HPP
 
 #include <string>
 #include <vector>
 #include <memory>
 #include <utility>
-#include <vixDiskLib.h>
 #include <nlohmann/json.hpp>
+#include <mutex>
+#include "vddk_wrapper/vddk_wrapper.h"
 
 // Forward declaration
 class VSphereRestClient;
+
+// VDDK version constants
+#define VIXDISKLIB_VERSION_MAJOR 8
+#define VIXDISKLIB_VERSION_MINOR 0
 
 class VMwareConnection {
 public:
@@ -16,10 +22,30 @@ public:
     VMwareConnection(const std::string& host, const std::string& username, const std::string& password);
     ~VMwareConnection();
 
-    bool connect(const std::string& host, const std::string& username, const std::string& password);
+    // Initialize VDDK library
+    bool initialize();
+
+    // Connect to vCenter/ESXi
+    bool connect(const std::string& host,
+                const std::string& username,
+                const std::string& password);
+
+    // Disconnect and cleanup
     void disconnect();
-    bool isConnected() const;
-    std::string getLastError() const;
+
+    // Get VDDK connection handle
+    VDDKConnection getVDDKConnection() const;
+
+    // Get server info
+    std::string getServer() const { return server_; }
+    std::string getUsername() const { return username_; }
+    std::string getThumbprint() const { return thumbprint_; }
+
+    // Check if connected
+    bool isConnected() const { return connected_; }
+
+    // Get last error message
+    std::string getLastError() const { return lastError_; }
 
     // Reference counting for active operations
     void incrementRefCount();
@@ -29,7 +55,6 @@ public:
     VSphereRestClient* getRestClient() const { return restClient_; }
 
     // VDDK operations
-    VixDiskLibConnection getVDDKConnection() const;
     void disconnectFromDisk();
     bool initializeVDDK();
     void cleanupVDDK();
@@ -55,12 +80,17 @@ public:
     bool verifyBackup(const std::string& backupId, nlohmann::json& response);
 
 private:
-    std::string host_;
+    std::string server_;
     std::string username_;
     std::string password_;
+    std::string thumbprint_;
+    std::string lastError_;  // Store last error message
     bool connected_;
-    VixDiskLibConnection vddkConnection_;
-    std::string lastError_;
+    bool initialized_;
+    mutable std::mutex mutex_;
+    VDDKConnection vddkConnection_;
     VSphereRestClient* restClient_;
     int refCount_;  // Track number of active operations
-}; 
+};
+
+#endif // VMWARE_CONNECTION_HPP 

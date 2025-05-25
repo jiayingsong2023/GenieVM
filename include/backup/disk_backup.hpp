@@ -1,54 +1,44 @@
-#pragma once
+#ifndef DISK_BACKUP_HPP
+#define DISK_BACKUP_HPP
 
-#include "backup/vm_config.hpp"
-#include "common/vmware_connection.hpp"
 #include <string>
-#include <vector>
 #include <memory>
+#include <vector>
 #include <functional>
-#include <vixDiskLib.h>
+#include <mutex>
+#include "vddk_wrapper/vddk_wrapper.h"
 
 class DiskBackup {
 public:
-    using ProgressCallback = std::function<void(double)>;
-
-    DiskBackup(std::shared_ptr<VMwareConnection> connection);
+    DiskBackup();
     ~DiskBackup();
 
+    // Initialize backup
     bool initialize();
-    bool startBackup(const std::string& vmId, const BackupConfig& config);
-    bool cancelBackup(const std::string& backupId);
-    bool pauseBackup(const std::string& backupId);
-    bool resumeBackup(const std::string& backupId);
-    bool getBackupStatus(const std::string& backupId, std::string& status, double& progress) const;
 
-    void setProgressCallback(ProgressCallback callback);
-    void setStatusCallback(std::function<void(const std::string&)> callback);
+    // Open source and target disks
+    bool openDisks(const std::string& sourcePath,
+                  const std::string& targetPath,
+                  uint64_t diskSize);
 
-    // Disk operations
-    bool openDisks();
+    // Close disks
     void closeDisks();
-    bool backupFull();
-    bool backupIncremental();
-    bool restore();
+
+    // Backup disk
+    bool backupDisk(std::function<void(int)> progressCallback = nullptr);
+
+    // Verify backup
+    bool verifyBackup();
+
+    // Get last error
+    std::string getLastError() const;
 
 private:
-    static char progressFunc(void* data, int percent);
-    bool copyBlocks(VixDiskLibBlockList* blockList);
-
-    std::shared_ptr<VMwareConnection> connection_;
+    VDDKConnection connection_;
+    VDDKHandle sourceHandle_;
+    VDDKHandle targetHandle_;
     std::string lastError_;
-    double progress_;
-    ProgressCallback progressCallback_;
-    std::function<void(const std::string&)> statusCallback_;
+    mutable std::mutex mutex_;
+};
 
-    // VDDK handles
-    VixDiskLibHandle sourceDisk_;
-    VixDiskLibHandle backupDisk_;
-
-    // State variables
-    bool isRunning_;
-    bool isPaused_;
-    std::string sourcePath_;
-    std::string backupPath_;
-}; 
+#endif // DISK_BACKUP_HPP 

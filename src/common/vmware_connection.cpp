@@ -1,59 +1,59 @@
 #include "common/logger.hpp"
 #include "common/vmware_connection.hpp"
 #include "common/vsphere_rest_client.hpp"
-#include <vixDiskLib.h>
 #include <nlohmann/json.hpp>
 #include <curl/curl.h>
 #include <sstream>
 #include <stdexcept>
 #include <cstring>
+#include "vddk_wrapper/vddk_wrapper.h"
 
 using json = nlohmann::json;
 
 VMwareConnection::VMwareConnection()
-    : connected_(false), vddkConnection_(nullptr), restClient_(nullptr), refCount_(0) {
+    : connected_(false), initialized_(false), vddkConnection_(nullptr), restClient_(nullptr), refCount_(0), lastError_("") {
     Logger::debug("VMwareConnection default constructor called");
 }
 
 VMwareConnection::VMwareConnection(const std::string& host, const std::string& username, const std::string& password)
-    : host_(host), username_(username), password_(password), connected_(false), vddkConnection_(nullptr), restClient_(nullptr), refCount_(0) {
-    Logger::debug("VMwareConnection parameterized constructor called for host: " + host);
+    : server_(host), username_(username), password_(password), connected_(false), initialized_(false), vddkConnection_(nullptr), restClient_(nullptr), refCount_(0), lastError_("") {
+    Logger::debug("VMwareConnection parameterized constructor called for server: " + host);
     restClient_ = new VSphereRestClient(host, username, password);
 }
 
 VMwareConnection::~VMwareConnection() {
-    Logger::debug("VMwareConnection destructor called for host: " + host_ + " - current ref count: " + std::to_string(refCount_));
+    Logger::debug("VMwareConnection destructor called for server: " + server_ + " - current ref count: " + std::to_string(refCount_));
     Logger::debug("Connection state at destruction - connected: " + std::string(connected_ ? "true" : "false"));
     
     // Only cleanup if no active operations
     if (refCount_ == 0) {
         // First disconnect if still connected
         if (connected_) {
-            Logger::debug("Disconnecting in VMwareConnection destructor for host: " + host_);
+            Logger::debug("Disconnecting in VMwareConnection destructor for server: " + server_);
             disconnect();
         }
         
         // Then cleanup disk connection
-        Logger::debug("Cleaning up disk connection for host: " + host_);
+        Logger::debug("Cleaning up disk connection for server: " + server_);
         disconnectFromDisk();
         
         // Finally cleanup REST client
         if (restClient_) {
-            Logger::debug("Cleaning up REST client in VMwareConnection destructor for host: " + host_);
+            Logger::debug("Cleaning up REST client in VMwareConnection destructor for server: " + server_);
             delete restClient_;
             restClient_ = nullptr;
-            Logger::debug("REST client cleanup completed for host: " + host_);
+            Logger::debug("REST client cleanup completed for server: " + server_);
         }
     } else {
-        Logger::info("Skipping cleanup in destructor as there are " + std::to_string(refCount_) + " active operations for host: " + host_);
+        Logger::info("Skipping cleanup in destructor as there are " + std::to_string(refCount_) + " active operations for server: " + server_);
     }
-    Logger::debug("VMwareConnection destructor completed for host: " + host_);
+    Logger::debug("VMwareConnection destructor completed for server: " + server_);
 }
 
 bool VMwareConnection::connect(const std::string& host, const std::string& username, const std::string& password) {
     Logger::info("Initializing VMware connection to: " + host);
     
-    host_ = host;
+    server_ = host;
     username_ = username;
     password_ = password;
     
@@ -73,33 +73,25 @@ bool VMwareConnection::connect(const std::string& host, const std::string& usern
         Logger::error("4. SSL/TLS configuration");
     } else {
         Logger::info("Successfully connected to vCenter/ESXi");
-        Logger::debug("Connection established with host: " + host + ", username: " + username);
+        Logger::debug("Connection established with server: " + host + ", username: " + username);
         Logger::debug("Current ref count after connection: " + std::to_string(refCount_));
     }
     return connected_;
 }
 
 void VMwareConnection::disconnect() {
-    Logger::debug("Disconnect called for host: " + host_ + ", current ref count: " + std::to_string(refCount_));
+    Logger::debug("Disconnect called for server: " + server_ + ", current ref count: " + std::to_string(refCount_));
     // Only disconnect if no active operations
     if (refCount_ == 0) {
         if (connected_ && restClient_) {
-            Logger::debug("Logging out from VMwareConnection for host: " + host_);
+            Logger::debug("Logging out from VMwareConnection for server: " + server_);
             restClient_->logout();
             connected_ = false;
-            Logger::debug("Successfully logged out from host: " + host_);
+            Logger::debug("Successfully logged out from server: " + server_);
         }
     } else {
-        Logger::info("Skipping disconnect as there are " + std::to_string(refCount_) + " active operations for host: " + host_);
+        Logger::info("Skipping disconnect as there are " + std::to_string(refCount_) + " active operations for server: " + server_);
     }
-}
-
-bool VMwareConnection::isConnected() const {
-    return connected_;
-}
-
-std::string VMwareConnection::getLastError() const {
-    return lastError_;
 }
 
 std::vector<std::string> VMwareConnection::listVMs() const {
@@ -197,27 +189,39 @@ bool VMwareConnection::getChangedBlocks(const std::string& vmId, const std::stri
     return false;
 }
 
-bool VMwareConnection::initializeVDDK() {
-    VixError vixError = VixDiskLib_Init(1, 1, nullptr, nullptr, nullptr, nullptr);
-    if (VIX_FAILED(vixError)) {
-        lastError_ = "Failed to initialize VDDK";
-        Logger::error(lastError_);
+bool VMwareConnection::initialize() {
+    // Initialize VDDK
+    VixError vixError = VixDiskLib_InitWrapper(VIXDISKLIB_VERSION_MAJOR,
+                                             VIXDISKLIB_VERSION_MINOR,
+                                             nullptr);
+    if (vixError != VIX_OK) {
+        char* errorMsg = VixDiskLib_GetErrorTextWrapper(vixError, nullptr, 0);
+        if (errorMsg) {
+            lastError_ = errorMsg;
+            VixDiskLib_FreeErrorTextWrapper(errorMsg);
+        }
         return false;
     }
+    initialized_ = true;
     return true;
 }
 
 void VMwareConnection::cleanupVDDK() {
-    VixDiskLib_Exit();
+    if (vddkConnection_) {
+        VixDiskLib_DisconnectWrapper(&vddkConnection_);
+        vddkConnection_ = nullptr;
+    }
+    VixDiskLib_ExitWrapper();
+    initialized_ = false;
 }
 
-VixDiskLibConnection VMwareConnection::getVDDKConnection() const {
+VDDKConnection VMwareConnection::getVDDKConnection() const {
     return vddkConnection_;
 }
 
 void VMwareConnection::disconnectFromDisk() {
     if (vddkConnection_) {
-        VixDiskLib_Disconnect(vddkConnection_);
+        VixDiskLib_DisconnectWrapper(&vddkConnection_);
         vddkConnection_ = nullptr;
     }
 }
@@ -341,25 +345,25 @@ bool VMwareConnection::verifyBackup(const std::string& backupId, nlohmann::json&
 }
 
 void VMwareConnection::incrementRefCount() {
-    Logger::debug("Incrementing ref count from " + std::to_string(refCount_) + " for host: " + host_);
+    Logger::debug("Incrementing ref count from " + std::to_string(refCount_) + " for server: " + server_);
     refCount_++;
     Logger::debug("Incremented ref count to " + std::to_string(refCount_));
 }
 
 void VMwareConnection::decrementRefCount() {
-    Logger::debug("Decrementing ref count from " + std::to_string(refCount_) + " for host: " + host_);
+    Logger::debug("Decrementing ref count from " + std::to_string(refCount_) + " for server: " + server_);
     if (refCount_ > 0) {
         refCount_--;
         Logger::debug("Decremented ref count to " + std::to_string(refCount_));
         
         // If this was the last operation, cleanup
         if (refCount_ == 0) {
-            Logger::debug("No more active operations, cleaning up connection for host: " + host_);
+            Logger::debug("No more active operations, cleaning up connection for server: " + server_);
             if (connected_) {
                 disconnect();
             }
         }
     } else {
-        Logger::info("Attempted to decrement ref count below 0 for host: " + host_);
+        Logger::info("Attempted to decrement ref count below 0 for server: " + server_);
     }
 } 
