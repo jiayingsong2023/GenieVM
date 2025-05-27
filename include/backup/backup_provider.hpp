@@ -21,22 +21,27 @@ public:
     virtual bool isConnected() const = 0;
 
     // VM operations
-    virtual bool getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) const = 0;
-    virtual bool backupDisk(const std::string& vmId, const std::string& diskPath, const BackupConfig& config) = 0;
-    virtual bool restoreDisk(const std::string& vmId, const std::string& diskPath, const RestoreConfig& config) = 0;
-    virtual bool verifyDisk(const std::string& diskPath) = 0;
+    virtual bool getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) = 0;
+    virtual bool createSnapshot(const std::string& vmId, std::string& snapshotId) = 0;
+    virtual bool removeSnapshot(const std::string& vmId, const std::string& snapshotId) = 0;
     virtual bool getChangedBlocks(const std::string& vmId, const std::string& diskPath,
                                 std::vector<std::pair<uint64_t, uint64_t>>& changedBlocks) = 0;
-
-    // Backup management
-    virtual bool listBackups(std::vector<std::string>& backupIds) = 0;
-    virtual bool deleteBackup(const std::string& backupId) = 0;
+    
+    // Backup operations
+    virtual bool backupDisk(const std::string& vmId, const std::string& diskPath, const BackupConfig& config) = 0;
+    virtual bool verifyDisk(const std::string& diskPath) = 0;
+    virtual bool listBackups(std::vector<std::string>& backupDirs) = 0;
+    virtual bool deleteBackup(const std::string& backupDir) = 0;
     virtual bool verifyBackup(const std::string& backupId) = 0;
-
+    virtual bool restoreDisk(const std::string& vmId, const std::string& diskPath, const RestoreConfig& config) = 0;
+    
     // Error handling
     virtual std::string getLastError() const = 0;
     virtual void clearLastError() = 0;
 
     // Progress tracking
     virtual double getProgress() const = 0;
-}; 
+};
+
+// Factory function to create appropriate backup provider
+std::shared_ptr<BackupProvider> createBackupProvider(const std::string& type, const std::string& connectionString); 

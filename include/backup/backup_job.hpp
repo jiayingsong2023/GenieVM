@@ -1,6 +1,6 @@
 #pragma once
 
-#include "backup/job.hpp"
+#include "common/job.hpp"
 #include "backup/backup_provider.hpp"
 #include "backup/vm_config.hpp"
 #include "common/parallel_task_manager.hpp"

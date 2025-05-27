@@ -40,15 +40,6 @@ if(NOT nlohmann_json_FOUND)
     message(FATAL_ERROR "nlohmann/json not found. Please install nlohmann-json3-dev package.")
 endif()
 
-# Add CLI11
-include(FetchContent)
-FetchContent_Declare(
-    CLI11
-    GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
-    GIT_TAG        v2.4.1
-)
-FetchContent_MakeAvailable(CLI11)
-
 # Find libvirt
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBVIRT REQUIRED libvirt)
@@ -88,11 +79,18 @@ set(VDDK_DEPS
     "${VDDK_LIB_DIR}/libcares.so.2"
 )
 
-# Check each VDDK dependency
+# Check each VDDK dependency and use system libraries if not found
 foreach(dep ${VDDK_DEPS})
+    get_filename_component(dep_name ${dep} NAME)
     if(NOT EXISTS ${dep})
-        message(WARNING "VDDK dependency not found: ${dep}")
-        list(REMOVE_ITEM VDDK_DEPS ${dep})
+        message(STATUS "VDDK dependency not found: ${dep}, using system library")
+        # Try to find the system library
+        find_library(SYSTEM_${dep_name} ${dep_name})
+        if(SYSTEM_${dep_name})
+            list(APPEND VDDK_DEPS ${SYSTEM_${dep_name}})
+        else()
+            message(WARNING "System library not found: ${dep_name}")
+        endif()
     endif()
 endforeach()
 
@@ -127,10 +125,10 @@ target_compile_definitions(vddk_wrapper PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
 # Link VDDK wrapper with VDDK's libraries
 target_link_libraries(vddk_wrapper
     PRIVATE
-    ${VDDK_DEPS}
-    ${VDDK_LIBRARY}
-    dl
-    pthread
+        ${VDDK_LIBRARY}
+        ${VDDK_LIB_DIR}/libcurl.so.4
+        dl
+        pthread
 )
 
 # Set RPATH for VDDK wrapper
@@ -153,11 +151,8 @@ set(SOURCES
     src/backup/backup_job.cpp
     src/backup/backup_scheduler.cpp
     src/backup/backup_verifier.cpp
-    src/backup/disk_backup.cpp
-    src/backup/restore_job.cpp
-    src/backup/job.cpp
-    src/backup/job_manager.cpp
     src/backup/verify_job.cpp
+    # src/backup/backup_provider_factory.cpp
 
     # Backup KVM files
     src/backup/kvm/cbt_factory.cpp
@@ -168,6 +163,11 @@ set(SOURCES
 
     # Backup VMware files
     src/backup/vmware/vmware_backup_provider.cpp
+    src/backup/vmware/disk_backup.cpp
+
+    # Restore files
+    src/restore/restore_job.cpp
+    src/restore/vmware/disk_restore.cpp
 
     # Common files
     src/common/logger.cpp
@@ -176,6 +176,8 @@ set(SOURCES
     src/common/vmware_connection.cpp
     src/common/vsphere_manager.cpp
     src/common/vsphere_rest_client.cpp
+    src/common/job.cpp
+    src/common/job_manager.cpp
 )
 
 # Create executable
@@ -188,34 +190,29 @@ target_include_directories(genievm
         ${VDDK_INCLUDE_DIR}
         ${CURL_INCLUDE_DIRS}
         ${LIBVIRT_INCLUDE_DIRS}
-        ${CLI11_INCLUDE_DIRS}
 )
+
+# Set old ABI for main executable since it links against VDDK wrapper
+target_compile_definitions(genievm PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
 
 # Link libraries for main executable (using system libraries)
 target_link_libraries(genievm
     PRIVATE
-    vddk_wrapper
-    ${CURL_LIBRARIES}
-    ${LIBVIRT_LIBRARIES}
-    nlohmann_json::nlohmann_json
-    CLI11::CLI11
-    pthread
-    dl
-    OpenSSL::SSL
-    OpenSSL::Crypto
-    z
-    stdc++
-    -static-libstdc++
-    -static-libgcc
+        vddk_wrapper
+        /usr/lib/x86_64-linux-gnu/libcurl.so
+        ${LIBVIRT_LIBRARIES}
+        ${OPENSSL_LIBRARIES}
+        ${nlohmann_json_LIBRARIES}
+        pthread
+        dl
 )
 
 # Set RPATH for main executable
 set_target_properties(genievm PROPERTIES
-    INSTALL_RPATH "${VDDK_LIB_DIR}"
+    INSTALL_RPATH "/usr/lib/x86_64-linux-gnu"
     BUILD_WITH_INSTALL_RPATH TRUE
     SKIP_BUILD_RPATH FALSE
     INSTALL_RPATH_USE_LINK_PATH TRUE
-    LINK_FLAGS "-Wl,--no-as-needed"
 )
 
 # Install

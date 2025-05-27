@@ -1,16 +1,19 @@
 add_library(vmware-backup-lib
-    backup/disk_backup.cpp
+    backup/vmware/disk_backup.cpp
+    backup/vmware/vmware_backup_provider.cpp
+    backup/kvm/kvm_backup_provider.cpp
+    backup/backup_provider_factory.cpp
     common/vmware_connection.cpp
     common/logger.cpp
-    backup/job_manager.cpp
+    common/job_manager.cpp
     backup/backup_job.cpp
     backup/verify_job.cpp
-    backup/restore_job.cpp
+    restore/restore_job.cpp
     common/parallel_task_manager.cpp
 )
 
 add_library(vmware-restore-lib
-    restore/disk_restore.cpp
+    restore/vmware/disk_restore.cpp
     common/vmware_connection.cpp
     common/logger.cpp
     common/parallel_task_manager.cpp

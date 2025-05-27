@@ -222,9 +222,18 @@ bool BackupJob::cleanupOldBackups() {
 
 void BackupJob::executeBackup() {
     try {
+        // Create snapshot before backup
+        std::string snapshotId;
+        if (!provider_->createSnapshot(config_.vmId, snapshotId)) {
+            setError("Failed to create snapshot: " + provider_->getLastError());
+            setState(State::FAILED);
+            return;
+        }
+
         // Get VM disk paths
         std::vector<std::string> diskPaths;
         if (!provider_->getVMDiskPaths(config_.vmId, diskPaths)) {
+            provider_->removeSnapshot(config_.vmId, snapshotId); // Cleanup snapshot
             setError("Failed to get VM disk paths: " + provider_->getLastError());
             setState(State::FAILED);
             return;
@@ -236,6 +245,7 @@ void BackupJob::executeBackup() {
 
         for (const auto& diskPath : diskPaths) {
             if (isCancelled()) {
+                provider_->removeSnapshot(config_.vmId, snapshotId); // Cleanup snapshot
                 setError("Backup cancelled");
                 setState(State::CANCELLED);
                 return;
@@ -247,6 +257,7 @@ void BackupJob::executeBackup() {
             }
 
             if (!provider_->backupDisk(config_.vmId, diskPath, config_)) {
+                provider_->removeSnapshot(config_.vmId, snapshotId); // Cleanup snapshot
                 setError("Failed to backup disk " + diskPath + ": " + provider_->getLastError());
                 setState(State::FAILED);
                 return;
@@ -256,20 +267,10 @@ void BackupJob::executeBackup() {
             updateProgress((backedUpDisks * 100) / totalDisks);
         }
 
-        // Write backup metadata
-        if (!writeBackupMetadata()) {
-            setError("Failed to write backup metadata");
-            setState(State::FAILED);
-            return;
-        }
-
-        // Cleanup old backups if needed
-        if (config_.maxBackups > 0) {
-            if (!cleanupOldBackups()) {
-                setError("Failed to cleanup old backups");
-                setState(State::FAILED);
-                return;
-            }
+        // Remove snapshot after successful backup
+        if (!provider_->removeSnapshot(config_.vmId, snapshotId)) {
+            setError("Warning: Failed to remove snapshot: " + provider_->getLastError());
+            // Continue anyway as the backup was successful
         }
 
         setState(State::COMPLETED);

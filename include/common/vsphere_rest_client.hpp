@@ -24,7 +24,7 @@ public:
     // Authentication
     bool login();
     bool logout();
-    bool isLoggedIn() const;
+    bool isLoggedIn() const { return isLoggedIn_; }
     std::string getLastError() const;
     bool refreshSession();
 

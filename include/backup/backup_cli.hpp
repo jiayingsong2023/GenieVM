@@ -1,8 +1,7 @@
 #pragma once
 
-#include "backup/job_manager.hpp"
+#include "common/job_manager.hpp"
 #include "backup/backup_scheduler.hpp"
-#include "backup/backup_provider.hpp"
 #include "common/logger.hpp"
 #include <memory>
 #include <string>
@@ -11,8 +10,7 @@
 
 class BackupCLI {
 public:
-    BackupCLI(std::shared_ptr<JobManager> jobManager,
-              std::shared_ptr<BackupProvider> provider);
+    explicit BackupCLI(std::shared_ptr<JobManager> jobManager);
     ~BackupCLI();
 
     void run(int argc, char* argv[]);
@@ -29,7 +27,5 @@ private:
     time_t parseTime(const std::string& timeStr) const;
 
     std::shared_ptr<JobManager> jobManager_;
-    std::shared_ptr<BackupProvider> provider_;
     std::shared_ptr<BackupScheduler> scheduler_;
-    std::shared_ptr<VMwareConnection> connection_;
 }; 

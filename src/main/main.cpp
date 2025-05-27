@@ -3,7 +3,6 @@
 #include "common/logger.hpp"
 #include <filesystem>
 #include <cstdio>
-#include <CLI/CLI.hpp>
 
 // Forward declarations
 int backupMain(int argc, char* argv[]);
@@ -45,8 +44,6 @@ int main(int argc, char* argv[]) {
     // Parse command line arguments
     fprintf(stderr, "Parsing command line arguments...\n");
     fflush(stderr);
-    
-    CLI::App app{"GenieVM - VMware vSphere Backup and Restore Tool"};
 
     if (argc < 2) {
         printMainUsage();

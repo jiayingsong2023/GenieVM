@@ -1,11 +1,9 @@
 #include "backup/backup_cli.hpp"
-#include "backup/job_manager.hpp"
+#include "common/job_manager.hpp"
 #include "backup/backup_scheduler.hpp"
 #include "backup/backup_verifier.hpp"
-#include "backup/backup_job.hpp"
-#include "backup/vmware/vmware_backup_provider.hpp"
+#include "common/job.hpp"
 #include "common/logger.hpp"
-#include "common/vmware_connection.hpp"
 #include "main/backup_main.hpp"
 #include "common/backup_status.hpp"
 #include <iostream>
@@ -23,17 +21,12 @@
 
 using json = nlohmann::json;
 
-BackupCLI::BackupCLI(std::shared_ptr<JobManager> jobManager,
-                     std::shared_ptr<BackupProvider> provider)
+BackupCLI::BackupCLI(std::shared_ptr<JobManager> jobManager)
     : jobManager_(jobManager)
-    , provider_(provider)
-    , scheduler_(std::make_shared<BackupScheduler>(jobManager, provider)) {
+    , scheduler_(std::make_shared<BackupScheduler>(jobManager)) {
 }
 
 BackupCLI::~BackupCLI() {
-    if (connection_) {
-        connection_->disconnect();
-    }
 }
 
 void BackupCLI::run(int argc, char* argv[]) {
@@ -67,7 +60,6 @@ void BackupCLI::run(int argc, char* argv[]) {
 }
 
 void BackupCLI::printUsage() const {
-    // Delegate to backup_main.cpp's printBackupUsage
     printBackupUsage();
 }
 
@@ -152,14 +144,14 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
 
     Logger::info("Starting backup process for VM: " + config.vmId);
     
-    // Connect to vCenter
-    Logger::debug("Attempting to connect to vCenter at: " + host);
+    // Connect to server
+    Logger::debug("Attempting to connect to server at: " + host);
     if (!jobManager_->connect(host, username, password)) {
-        Logger::error("Failed to connect to vCenter: " + jobManager_->getLastError());
+        Logger::error("Failed to connect to server: " + jobManager_->getLastError());
         return;
     }
 
-    Logger::info("Successfully connected to vCenter");
+    Logger::info("Successfully connected to server");
     
     try {
         // Create and start backup job
@@ -311,14 +303,14 @@ bool BackupCLI::handleVerifyCommand(int argc, char* argv[]) {
 
     Logger::info("Starting verify process for backup: " + config.backupId);
     
-    // Connect to vCenter
-    Logger::debug("Attempting to connect to vCenter at: " + host);
+    // Connect to server
+    Logger::debug("Attempting to connect to server at: " + host);
     if (!jobManager_->connect(host, username, password)) {
-        Logger::error("Failed to connect to vCenter: " + jobManager_->getLastError());
+        Logger::error("Failed to connect to server: " + jobManager_->getLastError());
         return false;
     }
 
-    Logger::info("Successfully connected to vCenter");
+    Logger::info("Successfully connected to server");
     
     try {
         // Create and start verify job
@@ -417,14 +409,14 @@ bool BackupCLI::handleRestoreCommand(int argc, char* argv[]) {
 
     Logger::info("Starting restore process for VM: " + config.vmId);
     
-    // Connect to vCenter
-    Logger::debug("Attempting to connect to vCenter at: " + host);
+    // Connect to server
+    Logger::debug("Attempting to connect to server at: " + host);
     if (!jobManager_->connect(host, username, password)) {
-        Logger::error("Failed to connect to vCenter: " + jobManager_->getLastError());
+        Logger::error("Failed to connect to server: " + jobManager_->getLastError());
         return false;
     }
 
-    Logger::info("Successfully connected to vCenter");
+    Logger::info("Successfully connected to server");
     
     try {
         // Create and start restore job

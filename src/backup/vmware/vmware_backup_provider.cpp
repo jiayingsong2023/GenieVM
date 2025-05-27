@@ -122,6 +122,27 @@ VMwareBackupProvider::VMwareBackupProvider(std::shared_ptr<VMwareConnection> con
     , progress_(0.0) {
 }
 
+VMwareBackupProvider::VMwareBackupProvider(const std::string& connectionString)
+    : connection_(std::make_shared<VMwareConnection>())
+    , progress_(0.0) {
+    // Parse connection string format: "host:port:username:password"
+    std::stringstream ss(connectionString);
+    std::string host, port, username, password;
+    std::getline(ss, host, ':');
+    std::getline(ss, port, ':');
+    std::getline(ss, username, ':');
+    std::getline(ss, password, ':');
+
+    if (host.empty() || username.empty() || password.empty()) {
+        throw std::runtime_error("Invalid connection string format. Expected: host:port:username:password");
+    }
+
+    // Connect to vCenter
+    if (!connection_->connect(host, username, password)) {
+        throw std::runtime_error("Failed to connect to vCenter: " + connection_->getLastError());
+    }
+}
+
 VMwareBackupProvider::~VMwareBackupProvider() {
     disconnect();
 }
@@ -202,12 +223,8 @@ std::vector<std::string> VMwareBackupProvider::listVMs() const {
     return connection_->listVMs();
 }
 
-bool VMwareBackupProvider::getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) const {
+bool VMwareBackupProvider::getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!connection_) {
-        const_cast<VMwareBackupProvider*>(this)->lastError_ = "Not connected";
-        return false;
-    }
     return connection_->getVMDiskPaths(vmId, diskPaths);
 }
 
@@ -219,7 +236,7 @@ bool VMwareBackupProvider::getVMInfo(const std::string& vmId, std::string& name,
     return connection_->getVMInfo(vmId, name, status);
 }
 
-bool VMwareBackupProvider::createSnapshot(const std::string& vmId) {
+bool VMwareBackupProvider::createSnapshot(const std::string& vmId, std::string& snapshotId) {
     if (!connection_ || !connection_->isConnected()) {
         lastError_ = "Not connected";
         return false;
@@ -236,11 +253,15 @@ bool VMwareBackupProvider::createSnapshot(const std::string& vmId) {
         return false;
     }
 
-    return restClient->createSnapshot(vmId, currentSnapshotName_, "Snapshot created for backup");
+    bool success = restClient->createSnapshot(vmId, currentSnapshotName_, "Snapshot created for backup");
+    if (success) {
+        snapshotId = currentSnapshotName_;
+    }
+    return success;
 }
 
-bool VMwareBackupProvider::removeSnapshot() {
-    if (currentSnapshotName_.empty() || !connection_ || !connection_->isConnected()) {
+bool VMwareBackupProvider::removeSnapshot(const std::string& vmId, const std::string& snapshotId) {
+    if (snapshotId.empty() || !connection_ || !connection_->isConnected()) {
         return false;
     }
 
@@ -250,15 +271,17 @@ bool VMwareBackupProvider::removeSnapshot() {
         return false;
     }
 
-    bool success = restClient->removeSnapshot(currentVmId_, currentSnapshotName_);
-    currentSnapshotName_.clear();
-    currentVmId_.clear();
+    bool success = restClient->removeSnapshot(vmId, snapshotId);
+    if (success && snapshotId == currentSnapshotName_) {
+        currentSnapshotName_.clear();
+        currentVmId_.clear();
+    }
     return success;
 }
 
 void VMwareBackupProvider::cleanupSnapshot() {
     if (!currentSnapshotName_.empty()) {
-        removeSnapshot();
+        removeSnapshot("", currentSnapshotName_);
     }
 }
 
@@ -692,7 +715,7 @@ std::string VMwareBackupProvider::calculateChecksum(const std::string& filePath)
     return oss.str();
 }
 
-bool VMwareBackupProvider::backupDisk(const std::string& sourcePath, const std::string& targetPath, const BackupConfig& config) {
+bool VMwareBackupProvider::backupDisk(const std::string& vmId, const std::string& diskPath, const BackupConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!connection_) {
         lastError_ = "Not connected";
@@ -706,7 +729,7 @@ bool VMwareBackupProvider::backupDisk(const std::string& sourcePath, const std::
         // Open source disk
         VDDKHandle sourceHandle;
         int32_t result = VixDiskLib_OpenWrapper(connection_->getVDDKConnection(),
-                                              sourcePath.c_str(),
+                                              diskPath.c_str(),
                                               VIXDISKLIB_FLAG_OPEN_READ_ONLY,
                                               &sourceHandle);
         if (result != VIX_OK) {
@@ -715,17 +738,17 @@ bool VMwareBackupProvider::backupDisk(const std::string& sourcePath, const std::
         }
 
         // Create backup file path
-        std::string backupDiskPath = config.backupPath + "/" + std::filesystem::path(sourcePath).filename().string();
+        std::string backupDiskPath = config.backupPath + "/" + std::filesystem::path(diskPath).filename().string();
 
         // Create target disk
-        VixDiskLibCreateParams createParams;
+        VDDKCreateParams createParams;
         memset(&createParams, 0, sizeof(createParams));
         createParams.diskType = static_cast<VixDiskLibDiskType>(VIXDISKLIB_DISK_MONOLITHIC_SPARSE);
         createParams.adapterType = static_cast<VixDiskLibAdapterType>(VIXDISKLIB_ADAPTER_SCSI_LSILOGIC);
         createParams.hwVersion = VIXDISKLIB_HWVERSION_WORKSTATION_5;
 
         result = VixDiskLib_CreateWrapper(connection_->getVDDKConnection(),
-                                        targetPath.c_str(),
+                                        backupDiskPath.c_str(),
                                         &createParams,
                                         nullptr,
                                         nullptr);
@@ -738,7 +761,7 @@ bool VMwareBackupProvider::backupDisk(const std::string& sourcePath, const std::
         // Open backup disk
         VDDKHandle backupHandle;
         result = VixDiskLib_OpenWrapper(connection_->getVDDKConnection(),
-                                      targetPath.c_str(),
+                                      backupDiskPath.c_str(),
                                       VIXDISKLIB_FLAG_OPEN_UNBUFFERED,
                                       &backupHandle);
         if (result != VIX_OK) {
@@ -807,7 +830,7 @@ bool VMwareBackupProvider::backupDisk(const std::string& sourcePath, const std::
     }
 }
 
-bool VMwareBackupProvider::restoreDisk(const std::string& sourcePath, const std::string& targetPath, const RestoreConfig& config) {
+bool VMwareBackupProvider::restoreDisk(const std::string& vmId, const std::string& diskPath, const RestoreConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!connection_) {
         lastError_ = "Not connected";
@@ -818,7 +841,7 @@ bool VMwareBackupProvider::restoreDisk(const std::string& sourcePath, const std:
         // Open backup disk
         VDDKHandle backupHandle;
         int32_t result = VixDiskLib_OpenWrapper(connection_->getVDDKConnection(),
-                                              config.backupId.c_str(),  // Use backupId instead of backupPath
+                                              config.backupId.c_str(),
                                               VIXDISKLIB_FLAG_OPEN_READ_ONLY,
                                               &backupHandle);
         if (result != VIX_OK) {
@@ -829,7 +852,7 @@ bool VMwareBackupProvider::restoreDisk(const std::string& sourcePath, const std:
         // Open target disk
         VDDKHandle targetHandle;
         result = VixDiskLib_OpenWrapper(connection_->getVDDKConnection(),
-                                      targetPath.c_str(),
+                                      diskPath.c_str(),
                                       VIXDISKLIB_FLAG_OPEN_UNBUFFERED,
                                       &targetHandle);
         if (result != VIX_OK) {

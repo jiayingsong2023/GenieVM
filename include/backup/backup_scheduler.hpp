@@ -1,8 +1,7 @@
 #pragma once
 
-#include "backup/job_manager.hpp"
+#include "common/job_manager.hpp"
 #include "backup/backup_job.hpp"
-#include "backup/backup_provider.hpp"
 #include "common/logger.hpp"
 #include <string>
 #include <vector>
@@ -12,11 +11,11 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <optional>
 
 class BackupScheduler {
 public:
-    BackupScheduler(std::shared_ptr<JobManager> jobManager,
-                   std::shared_ptr<BackupProvider> provider);
+    explicit BackupScheduler(std::shared_ptr<JobManager> jobManager);
     ~BackupScheduler();
 
     // Core functionality
@@ -41,6 +40,7 @@ public:
     bool isBackupExpired(const std::string& vmId, int retentionDays) const;
     bool isBackupNeeded(const std::string& vmId, const BackupConfig& config) const;
     std::string getBackupPath(const std::string& vmId, const BackupConfig& config) const;
+    std::optional<std::chrono::system_clock::time_point> getLastBackupTime(const std::string& vmId) const;
 
     // Thread control
     void start();
@@ -53,9 +53,8 @@ private:
     bool shouldRunBackup(const BackupConfig& config) const;
 
     std::shared_ptr<JobManager> jobManager_;
-    std::shared_ptr<BackupProvider> provider_;
     std::map<std::string, BackupConfig> schedules_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::thread schedulerThread_;
     std::atomic<bool> running_;
     std::atomic<bool> stopRequested_;

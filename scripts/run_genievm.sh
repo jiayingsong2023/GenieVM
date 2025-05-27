@@ -14,5 +14,8 @@ export LD_LIBRARY_PATH="$PROJECT_ROOT/build:$VDDK_LIB_DIR:$LD_LIBRARY_PATH"
 # Set environment variables for VDDK
 export LD_PRELOAD="$VDDK_LIB_DIR/libstdc++.so.6"
 
+# Set LD_PRELOAD for system's libcurl.so.4
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libcurl.so.4
+
 # Run genievm with all arguments passed to this script
 "$PROJECT_ROOT/build/genievm" "$@" 

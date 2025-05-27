@@ -21,6 +21,7 @@ class VMwareBackupProvider : public BackupProvider, public std::enable_shared_fr
 public:
     VMwareBackupProvider();
     explicit VMwareBackupProvider(std::shared_ptr<VMwareConnection> connection);
+    explicit VMwareBackupProvider(const std::string& connectionString);
     ~VMwareBackupProvider() override;
 
     // Connection management
@@ -35,16 +36,16 @@ public:
     // VM operations
     std::vector<std::string> listVMs() const;
     bool getVMInfo(const std::string& vmId, std::string& name, std::string& status) const;
-    bool getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) const override;
+    bool getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) override;
     bool backupDisk(const std::string& vmId, const std::string& diskPath, const BackupConfig& config) override;
-    bool restoreDisk(const std::string& vmId, const std::string& diskPath, const RestoreConfig& config) override;
+    bool restoreDisk(const std::string& vmId, const std::string& diskPath, const RestoreConfig& config);
     bool verifyDisk(const std::string& diskPath) override;
     bool getChangedBlocks(const std::string& vmId, const std::string& diskPath,
                          std::vector<std::pair<uint64_t, uint64_t>>& changedBlocks) override;
 
     // Snapshot management
-    bool createSnapshot(const std::string& vmId);
-    bool removeSnapshot();
+    bool createSnapshot(const std::string& vmId, std::string& snapshotId) override;
+    bool removeSnapshot(const std::string& vmId, const std::string& snapshotId) override;
     void cleanupSnapshot();
 
     // Backup management
