@@ -17,10 +17,9 @@ enable_testing()
 set(VDDK_ROOT "/usr/local/vddk" CACHE PATH "Path to VDDK installation")
 set(VDDK_LIB_DIR "${VDDK_ROOT}/lib64")
 
-# Set RPATH settings to prioritize VDDK's libraries
+# Set RPATH settings
 set(CMAKE_SKIP_BUILD_RPATH FALSE)
 set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
-set(CMAKE_INSTALL_RPATH "${VDDK_LIB_DIR}")
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 # Set library search path
@@ -127,16 +126,18 @@ target_link_libraries(vddk_wrapper
     PRIVATE
         ${VDDK_LIBRARY}
         ${VDDK_LIB_DIR}/libcurl.so.4
+        ${VDDK_LIB_DIR}/libstdc++.so.6
         dl
         pthread
 )
 
-# Set RPATH for VDDK wrapper
+# Set RPATH for VDDK wrapper to use VDDK's libraries
 set_target_properties(vddk_wrapper PROPERTIES
     INSTALL_RPATH "${VDDK_LIB_DIR}"
     BUILD_WITH_INSTALL_RPATH TRUE
     SKIP_BUILD_RPATH FALSE
     INSTALL_RPATH_USE_LINK_PATH TRUE
+    LINK_DEPENDS_NO_SHARED TRUE
 )
 
 # Add source files for main executable
@@ -152,7 +153,6 @@ set(SOURCES
     src/backup/backup_scheduler.cpp
     src/backup/backup_verifier.cpp
     src/backup/verify_job.cpp
-    # src/backup/backup_provider_factory.cpp
 
     # Backup KVM files
     src/backup/kvm/cbt_factory.cpp
@@ -192,9 +192,6 @@ target_include_directories(genievm
         ${LIBVIRT_INCLUDE_DIRS}
 )
 
-# Set old ABI for main executable since it links against VDDK wrapper
-target_compile_definitions(genievm PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
-
 # Link libraries for main executable (using system libraries)
 target_link_libraries(genievm
     PRIVATE
@@ -205,14 +202,16 @@ target_link_libraries(genievm
         ${nlohmann_json_LIBRARIES}
         pthread
         dl
+        /usr/lib/x86_64-linux-gnu/libstdc++.so.6
 )
 
-# Set RPATH for main executable
+# Set RPATH for main executable to use system libraries
 set_target_properties(genievm PROPERTIES
     INSTALL_RPATH "/usr/lib/x86_64-linux-gnu"
     BUILD_WITH_INSTALL_RPATH TRUE
     SKIP_BUILD_RPATH FALSE
     INSTALL_RPATH_USE_LINK_PATH TRUE
+    LINK_DEPENDS_NO_SHARED TRUE
 )
 
 # Install

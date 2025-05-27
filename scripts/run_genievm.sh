@@ -3,19 +3,18 @@
 # Get the directory where the script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+BUILD_DIR="$PROJECT_ROOT/build"
 
-# Set VDDK paths
-export VDDK_ROOT="/usr/local/vddk"
-export VDDK_LIB_DIR="$VDDK_ROOT/lib64"
+# Check if the executable exists
+if [ ! -f "$BUILD_DIR/genievm" ]; then
+    echo "Error: genievm executable not found in $BUILD_DIR"
+    echo "Please run ./build.sh first"
+    exit 1
+fi
 
 # Set library paths
-export LD_LIBRARY_PATH="$PROJECT_ROOT/build:$VDDK_LIB_DIR:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="$BUILD_DIR:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+export LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libstdc++.so.6"
 
-# Set environment variables for VDDK
-export LD_PRELOAD="$VDDK_LIB_DIR/libstdc++.so.6"
-
-# Set LD_PRELOAD for system's libcurl.so.4
-export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libcurl.so.4
-
-# Run genievm with all arguments passed to this script
-"$PROJECT_ROOT/build/genievm" "$@" 
+# Run the executable
+"$BUILD_DIR/genievm" "$@" 
