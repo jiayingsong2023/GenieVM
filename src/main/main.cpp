@@ -1,18 +1,35 @@
-#include "main/backup_main.hpp"
-#include "main/restore_main.hpp"
+#include "common/backup_cli.hpp"
 #include "common/logger.hpp"
 #include <iostream>
 #include <string>
 
-void printUsage() {
-    std::cout << "Usage: genievm [command] [options]\n"
+
+void printBackupUsage() {
+    std::cout << "Usage: genievm backup [command] [options]\n"
               << "Commands:\n"
-              << "  backup    - Backup operations\n"
-              << "  restore   - Restore operations\n"
+              << "  backup    - Create a backup of a VM\n"
+              << "  schedule  - Schedule a backup\n"
+              << "  list      - List scheduled backups\n"
+              << "  verify    - Verify a backup\n"
+              << "  restore   - Restore from a backup\n"
               << "\n"
               << "Options:\n"
-              << "  -h, --help    Show this help message\n"
-              << "  -v, --version Show version information\n";
+              << "  -h, --help           Show this help message\n"
+              << "  -v, --vm-name        VM name or ID\n"
+              << "  -b, --backup-dir     Backup directory\n"
+              << "  -s, --server         Server address\n"
+              << "  -u, --username       Username\n"
+              << "  -p, --password       Password\n"
+              << "  -i, --incremental    Enable incremental backup\n"
+              << "  --schedule           Schedule time (HH:MM)\n"
+              << "  --interval           Interval in minutes\n"
+              << "  --parallel           Number of parallel disk operations\n"
+              << "  --compression        Compression level (0-9)\n"
+              << "  --retention          Retention period in days\n"
+              << "  --max-backups        Maximum number of backups to keep\n"
+              << "  --disable-cbt        Disable Changed Block Tracking\n"
+              << "  --exclude-disk       Exclude disk from backup\n"
+              << "  --vm-type            Backup provider type (vmware/kvm)\n";
 }
 
 int main(int argc, char** argv) {
@@ -24,7 +41,7 @@ int main(int argc, char** argv) {
     // Check for help flag first, before any initialization
     if (argc > 1 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
         std::cout << "Help flag detected, showing usage" << std::endl;
-        printUsage();
+        printBackupUsage();
         return 0;
     }
 
@@ -38,7 +55,7 @@ int main(int argc, char** argv) {
     // Check for command
     if (argc < 2) {
         std::cerr << "Error: No command specified" << std::endl;
-        printUsage();
+        printBackupUsage();
         return 1;
     }
 
@@ -58,25 +75,11 @@ int main(int argc, char** argv) {
     }
 
     try {
-        if (command == "backup") {
-            std::cout << "Executing backup command with " << (argc - 1) << " arguments" << std::endl;
-            return backupMain(argc - 1, argv + 1);
-        } else if (command == "restore") {
-            std::cout << "Executing restore command with " << (argc - 1) << " arguments" << std::endl;
-            return restoreMain(argc - 1, argv + 1);
-        } else {
-            std::cerr << "Error: Unknown command: " << command << std::endl;
-            if (Logger::isInitialized()) {
-                Logger::error("Unknown command: " + command);
-            }
-            printUsage();
-            return 1;
-        }
+        BackupCLI cli;
+        cli.run(argc, argv);
     } catch (const std::exception& e) {
         std::cerr << "Error in main: " << e.what() << std::endl;
-        if (Logger::isInitialized()) {
-            Logger::error("Error in main: " + std::string(e.what()));
-        }
         return 1;
     }
 } 
+

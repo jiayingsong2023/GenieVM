@@ -10,11 +10,13 @@
 
 class BackupCLI {
 public:
-    explicit BackupCLI(std::shared_ptr<JobManager> jobManager);
+    BackupCLI();
     ~BackupCLI();
 
     void run(int argc, char* argv[]);
     void printUsage() const;
+    void initialize(const std::string& type, const std::string& host, const std::string& port,
+                   const std::string& username, const std::string& password);
 
 private:
     void handleBackupCommand(int argc, char* argv[]);
@@ -26,6 +28,6 @@ private:
     std::string formatTime(time_t time) const;
     time_t parseTime(const std::string& timeStr) const;
 
-    std::shared_ptr<JobManager> jobManager_;
-    std::shared_ptr<BackupScheduler> scheduler_;
+    JobManager* jobManager_;
+    BackupScheduler* scheduler_;
 }; 

@@ -1,4 +1,4 @@
-#include "backup/backup_cli.hpp"
+#include "common/backup_cli.hpp"
 #include "common/job_manager.hpp"
 #include "backup/backup_scheduler.hpp"
 #include "backup/backup_verifier.hpp"
@@ -6,6 +6,7 @@
 #include "common/logger.hpp"
 #include "main/backup_main.hpp"
 #include "common/backup_status.hpp"
+#include "backup/backup_provider_factory.hpp"
 #include <iostream>
 #include <iomanip>
 #include <ctime>
@@ -21,12 +22,31 @@
 
 using json = nlohmann::json;
 
-BackupCLI::BackupCLI(std::shared_ptr<JobManager> jobManager)
-    : jobManager_(jobManager)
-    , scheduler_(std::make_shared<BackupScheduler>(jobManager)) {
+BackupCLI::BackupCLI() : jobManager_(nullptr), scheduler_(nullptr) {
+
 }
 
 BackupCLI::~BackupCLI() {
+    if (jobManager_) {
+        delete jobManager_;
+    }
+    if (scheduler_) {
+        delete scheduler_;
+    }   
+}
+
+void BackupCLI::initialize(const std::string& type, 
+        const std::string& host, 
+        const std::string& port,
+        const std::string& username, 
+        const std::string& password) {
+
+    jobManager_ = new JobManager();
+    auto provider = createBackupProvider(type, host, port, username, password);
+    jobManager_->setProvider(provider);
+    jobManager_->initialize();
+    scheduler_ = new BackupScheduler(jobManager_);
+    scheduler_->initialize();
 }
 
 void BackupCLI::run(int argc, char* argv[]) {
@@ -67,12 +87,12 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
     Logger::info("Starting backup command handling");
     BackupConfig config;
     std::string host, username, password;
-
+    std::string vmType = "vmware";
     // Parse command line arguments
     for (int i = 0; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "-h" || arg == "--help") {
-            printBackupUsage();
+            printUsage();
             return;
         } else if (arg == "-v" || arg == "--vm-name") {
             if (i + 1 < argc) {
@@ -99,7 +119,12 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
                 password = argv[++i];
                 Logger::debug("Parsed password: [REDACTED]");
             }
-        } else if (arg == "-i" || arg == "--incremental") {
+        } else if (arg == "--vm-type") {
+            if (i + 1 < argc) {
+                vmType = argv[++i];
+                Logger::debug("Parsed VM type: " + vmType);
+            }
+        }else if (arg == "-i" || arg == "--incremental") {
             config.incremental = true;
         } else if (arg == "--schedule") {
             if (i + 1 < argc) {
@@ -127,7 +152,7 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
             config.enableCBT = false;
         } else if (arg == "--exclude-disk") {
             if (i + 1 < argc) config.excludedDisks.push_back(argv[++i]);
-        }
+        } 
     }
 
     // Validate required parameters
@@ -138,12 +163,13 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
         Logger::error(std::string("Server: ") + (host.empty() ? "missing" : "set"));
         Logger::error(std::string("Username: ") + (username.empty() ? "missing" : "set"));
         Logger::error(std::string("Password: ") + (password.empty() ? "missing" : "set"));
-        printBackupUsage();
+        printUsage();
         return;
     }
 
     Logger::info("Starting backup process for VM: " + config.vmId);
     
+    initialize("vmware", host, "443", username, password);
     // Connect to server
     Logger::debug("Attempting to connect to server at: " + host);
     if (!jobManager_->connect(host, username, password)) {

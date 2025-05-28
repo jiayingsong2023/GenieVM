@@ -1,5 +1,6 @@
 #pragma once
 
+#include "backup/vm_config.hpp"
 #include "common/job_manager.hpp"
 #include "backup/backup_job.hpp"
 #include "common/logger.hpp"
@@ -15,7 +16,7 @@
 
 class BackupScheduler {
 public:
-    explicit BackupScheduler(std::shared_ptr<JobManager> jobManager);
+    explicit BackupScheduler(JobManager* jobManager);
     ~BackupScheduler();
 
     // Core functionality
@@ -52,7 +53,7 @@ private:
     void checkSchedules();
     bool shouldRunBackup(const BackupConfig& config) const;
 
-    std::shared_ptr<JobManager> jobManager_;
+    JobManager* jobManager_;
     std::map<std::string, BackupConfig> schedules_;
     mutable std::mutex mutex_;
     std::thread schedulerThread_;

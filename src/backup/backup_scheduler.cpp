@@ -10,7 +10,7 @@
 #include <iomanip>
 #include <sstream>
 
-BackupScheduler::BackupScheduler(std::shared_ptr<JobManager> jobManager)
+BackupScheduler::BackupScheduler(JobManager* jobManager)
     : jobManager_(jobManager)
     , running_(false)
     , stopRequested_(false) {

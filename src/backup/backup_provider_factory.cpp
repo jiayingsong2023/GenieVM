@@ -2,21 +2,17 @@
 #include "common/logger.hpp"
 #include <sstream>
 
-BackupProvider* createBackupProvider(const std::string& type, const std::string& connectionString) {
+BackupProvider* createBackupProvider(const std::string& type, 
+                const std::string& host, 
+                const std::string& port,
+                const std::string& username, 
+                const std::string& password) 
+{
     Logger::info("Creating backup provider of type: " + type);
-    Logger::debug("Connection string: " + connectionString);
+    Logger::debug("Connection string: " + host + ":" + port + ":" + username + ":" + password);
 
     if (type == "vmware") {
         Logger::info("Initializing VMware backup provider");
-        // Parse connection string format: "host:port:username:password"
-        std::stringstream ss(connectionString);
-        std::string host, port, username, password;
-        std::getline(ss, host, ':');
-        std::getline(ss, port, ':');
-        std::getline(ss, username, ':');
-        std::getline(ss, password, ':');
-
-        Logger::debug("Parsed connection details - Host: " + host + ", Port: " + port + ", Username: " + username);
 
         if (host.empty() || username.empty() || password.empty()) {
             Logger::error("Invalid connection string format. Expected: host:port:username:password");
@@ -39,24 +35,12 @@ BackupProvider* createBackupProvider(const std::string& type, const std::string&
     } else if (type == "kvm") {
         Logger::info("Initializing KVM backup provider");
         auto provider = new KVMBackupProvider();
-        // Parse connection string (format: username@host)
-        size_t atPos = connectionString.find('@');
-        if (atPos != std::string::npos) {
-            std::string username = connectionString.substr(0, atPos);
-            std::string host = connectionString.substr(atPos + 1);
-            Logger::debug("Parsed KVM connection details - Host: " + host + ", Username: " + username);
-            
-            if (!provider->connect(host, username, "")) {
-                Logger::error("Failed to connect to KVM host: " + provider->getLastError());
-                delete provider;
-                throw std::runtime_error("Failed to connect to KVM host: " + provider->getLastError());
-            }
-            Logger::info("Successfully connected to KVM host");
-        } else {
-            Logger::error("Invalid connection string format. Expected: username@host");
-            delete provider;
-            throw std::runtime_error("Invalid connection string format. Expected: username@host");
+        if (host.empty() || username.empty()) {
+            Logger::error("Invalid connection string format. Expected: host:port:username:password");
+            throw std::runtime_error("Invalid connection string format. Expected: host:port:username:password");
         }
+
+        provider->connect(host, username, password);    
         return provider;
     } else {
         Logger::error("Unsupported backup provider type: " + type);

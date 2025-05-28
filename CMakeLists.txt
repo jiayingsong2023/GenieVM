@@ -144,11 +144,8 @@ set_target_properties(vddk_wrapper PROPERTIES
 set(SOURCES
     # Main files
     src/main/main.cpp
-    src/main/backup_main.cpp
-    src/main/restore_main.cpp
 
     # Backup files
-    src/backup/backup_cli.cpp
     src/backup/backup_job.cpp
     src/backup/backup_scheduler.cpp
     src/backup/backup_verifier.cpp
@@ -171,6 +168,7 @@ set(SOURCES
     src/restore/vmware/disk_restore.cpp
 
     # Common files
+    src/common/backup_cli.cpp
     src/common/logger.cpp
     src/common/parallel_task_manager.cpp
     src/common/scheduler.cpp

@@ -8,4 +8,8 @@
 #include <stdexcept>
 
 // Factory function to create appropriate backup provider
-BackupProvider* createBackupProvider(const std::string& type, const std::string& connectionString); 
+BackupProvider* createBackupProvider(const std::string& type, 
+        const std::string& host, 
+        const std::string& port,
+        const std::string& username, 
+        const std::string& password); 
