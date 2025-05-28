@@ -7,6 +7,10 @@ set -e
 ORIGINAL_LD_LIBRARY_PATH=$LD_LIBRARY_PATH
 ORIGINAL_LD_PRELOAD=$LD_PRELOAD
 
+# Set to Debug Mode
+export CMAKE_BUILD_TYPE=Debug
+export CMAKE_CXX_FLAGS="-g -O0 -Wall -Wextra -DDEBUG" 
+
 # Clear VDDK-related environment variables for build
 unset LD_LIBRARY_PATH
 unset LD_PRELOAD
