@@ -1,18 +1,9 @@
 #include "common/job_manager.hpp"
-#include "backup/vmware/vmware_backup_provider.hpp"
 #include "common/logger.hpp"
 #include <algorithm>
 
-JobManager::JobManager() {
-    connection_ = std::make_shared<VMwareConnection>();
-    provider_ = std::make_shared<VMwareBackupProvider>(connection_);
-}
-
-JobManager::JobManager(std::shared_ptr<VMwareConnection> connection)
-    : connection_(connection) {
-    if (connection_) {
-        provider_ = std::make_shared<VMwareBackupProvider>(connection_);
-    }
+JobManager::JobManager() 
+    : provider_(nullptr) {
 }
 
 JobManager::~JobManager() {
@@ -23,46 +14,43 @@ JobManager::~JobManager() {
         // Clean up completed jobs
         cleanupCompletedJobs();
         
-        // Disconnect from server
-        disconnect();
-        
         // Clear all job registries
         backupJobs_.clear();
         verifyJobs_.clear();
         restoreJobs_.clear();
-        
-        // Clear provider and connection
-        provider_.reset();
-        connection_.reset();
     } catch (const std::exception& e) {
         Logger::error("Error during JobManager cleanup: " + std::string(e.what()));
     }
 }
 
+void JobManager::setProvider(BackupProvider* provider) {
+    provider_ = provider;
+}
+
 bool JobManager::initialize() {
-    if (!connection_) {
-        lastError_ = "No connection available";
+    if (!provider_) {
+        lastError_ = "No provider available";
         return false;
     }
     return true;
 }
 
 bool JobManager::connect(const std::string& host, const std::string& username, const std::string& password) {
-    if (!connection_) {
-        lastError_ = "No connection available";
+    if (!provider_) {
+        lastError_ = "No provider available";
         return false;
     }
-    return connection_->connect(host, username, password);
+    return provider_->connect(host, username, password);
 }
 
 void JobManager::disconnect() {
-    if (connection_) {
-        connection_->disconnect();
+    if (provider_) {
+        provider_->disconnect();
     }
 }
 
 bool JobManager::isConnected() const {
-    return connection_ && connection_->isConnected();
+    return provider_ && provider_->isConnected();
 }
 
 std::shared_ptr<BackupJob> JobManager::createBackupJob(const BackupConfig& config) {

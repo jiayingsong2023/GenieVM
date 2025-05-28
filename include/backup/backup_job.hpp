@@ -13,7 +13,7 @@
 
 class BackupJob : public Job {
 public:
-    BackupJob(std::shared_ptr<BackupProvider> provider,
+    BackupJob(BackupProvider* provider,
              std::shared_ptr<ParallelTaskManager> taskManager,
              const BackupConfig& config);
     ~BackupJob() override;
@@ -53,7 +53,7 @@ private:
     bool readBackupMetadata() const;
     bool cleanupBackupDirectory() const;
 
-    std::shared_ptr<BackupProvider> provider_;
+    BackupProvider* provider_;  // Not owned by BackupJob
     std::shared_ptr<ParallelTaskManager> taskManager_;
     BackupConfig config_;
     mutable std::mutex mutex_;

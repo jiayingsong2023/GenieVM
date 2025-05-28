@@ -153,6 +153,7 @@ set(SOURCES
     src/backup/backup_scheduler.cpp
     src/backup/backup_verifier.cpp
     src/backup/verify_job.cpp
+    src/backup/backup_provider_factory.cpp
 
     # Backup KVM files
     src/backup/kvm/cbt_factory.cpp

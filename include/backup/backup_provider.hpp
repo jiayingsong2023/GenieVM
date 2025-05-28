@@ -41,7 +41,4 @@ public:
 
     // Progress tracking
     virtual double getProgress() const = 0;
-};
-
-// Factory function to create appropriate backup provider
-std::shared_ptr<BackupProvider> createBackupProvider(const std::string& type, const std::string& connectionString); 
+}; 

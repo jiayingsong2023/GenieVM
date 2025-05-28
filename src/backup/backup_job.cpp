@@ -12,7 +12,7 @@
 using namespace std::filesystem;
 using json = nlohmann::json;
 
-BackupJob::BackupJob(std::shared_ptr<BackupProvider> provider,
+BackupJob::BackupJob(BackupProvider* provider,
                     std::shared_ptr<ParallelTaskManager> taskManager,
                     const BackupConfig& config)
     : provider_(provider)

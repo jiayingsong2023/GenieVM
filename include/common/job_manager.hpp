@@ -5,37 +5,33 @@
 #include "backup/verify_job.hpp"
 #include "backup/restore_job.hpp"
 #include "backup/backup_provider.hpp"
-#include "backup/vmware/vmware_backup_provider.hpp"
 #include "backup/vm_config.hpp"
-#include "common/vmware_connection.hpp"
 #include "common/logger.hpp"
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 #include <mutex>
+#include <map>
 
 class JobManager {
 public:
     JobManager();
-    explicit JobManager(std::shared_ptr<VMwareConnection> connection);
     ~JobManager();
 
-    // Connection management
+    // Provider management
+    void setProvider(BackupProvider* provider);
     bool initialize();
     bool connect(const std::string& host, const std::string& username, const std::string& password);
     void disconnect();
     bool isConnected() const;
 
-    // Provider management
-    void setProvider(std::shared_ptr<BackupProvider> provider) { provider_ = provider; }
-
-    // Job creation
+    // Job management
     std::shared_ptr<BackupJob> createBackupJob(const BackupConfig& config);
     std::shared_ptr<VerifyJob> createVerifyJob(const VerifyConfig& config);
     std::shared_ptr<RestoreJob> createRestoreJob(const RestoreConfig& config);
 
-    // Job registry and lookup
+    // Job queries
     std::vector<std::shared_ptr<BackupJob>> getBackupJobs() const;
     std::vector<std::shared_ptr<VerifyJob>> getVerifyJobs() const;
     std::vector<std::shared_ptr<RestoreJob>> getRestoreJobs() const;
@@ -59,8 +55,7 @@ public:
     void clearLastError() { lastError_.clear(); }
 
 private:
-    std::shared_ptr<VMwareConnection> connection_;
-    std::shared_ptr<BackupProvider> provider_;
+    BackupProvider* provider_;      // Not owned by JobManager
     
     // Job registries
     std::unordered_map<std::string, std::shared_ptr<BackupJob>> backupJobs_;

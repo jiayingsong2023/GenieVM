@@ -12,7 +12,7 @@
 
 class VerifyJob : public Job {
 public:
-    VerifyJob(std::shared_ptr<BackupProvider> provider,
+    VerifyJob(BackupProvider* provider,
              std::shared_ptr<ParallelTaskManager> taskManager,
              const VerifyConfig& config);
     ~VerifyJob() override;
@@ -45,7 +45,7 @@ private:
     bool readVerifyMetadata() const;
     bool cleanupVerifyDirectory() const;
 
-    std::shared_ptr<BackupProvider> provider_;
+    BackupProvider* provider_;  // Not owned by VerifyJob
     std::shared_ptr<ParallelTaskManager> taskManager_;
     VerifyConfig config_;
     mutable std::mutex mutex_;

@@ -1,12 +1,16 @@
 #include "backup/verify_job.hpp"
+#include "backup/backup_provider.hpp"
+#include "common/parallel_task_manager.hpp"
 #include "common/logger.hpp"
-#include <chrono>
-#include <random>
-#include <sstream>
-#include <iomanip>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <chrono>
+#include <thread>
 
-VerifyJob::VerifyJob(std::shared_ptr<BackupProvider> provider,
+using namespace std::filesystem;
+
+VerifyJob::VerifyJob(BackupProvider* provider,
                     std::shared_ptr<ParallelTaskManager> taskManager,
                     const VerifyConfig& config)
     : provider_(provider)

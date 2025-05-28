@@ -37,8 +37,16 @@ build() {
     mkdir -p build
     cd build
 
-    # Run CMake with system libraries
-    cmake ..
+    # Check if debug build is requested
+    if [ "$DEBUG" = "1" ]; then
+        echo "Building in debug mode..."
+        cmake -DCMAKE_BUILD_TYPE=Debug \
+              -DCMAKE_CXX_FLAGS_DEBUG="-g -O0 -Wall -Wextra -DDEBUG" \
+              ..
+    else
+        # Run CMake with system libraries
+        cmake ..
+    fi
 
     # Build the project
     make -j$(nproc)
@@ -50,7 +58,12 @@ build() {
     # Make the run script executable
     chmod +x ../scripts/run_genievm.sh
 
-    echo "Build completed. Use ./scripts/run_genievm.sh to run the program."
+    if [ "$DEBUG" = "1" ]; then
+        echo "Debug build completed. Use ./scripts/run_genievm.sh to run the program."
+        echo "For debugging, run: gdb ./build/genievm"
+    else
+        echo "Build completed. Use ./scripts/run_genievm.sh to run the program."
+    fi
 }
 
 # Function to rebuild (clean + build)
@@ -67,14 +80,19 @@ case "$1" in
     "rebuild")
         rebuild
         ;;
+    "debug")
+        export DEBUG=1
+        rebuild
+        ;;
     "build"|"")
         build
         ;;
     *)
-        echo "Usage: $0 {build|clean|rebuild}"
+        echo "Usage: $0 {build|clean|rebuild|debug}"
         echo "  build   - Build the project (default)"
         echo "  clean   - Clean the build directory"
         echo "  rebuild - Clean and rebuild the project"
+        echo "  debug   - Clean and rebuild with debug symbols"
         exit 1
         ;;
 esac 

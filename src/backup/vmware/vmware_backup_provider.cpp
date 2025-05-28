@@ -113,17 +113,17 @@ public:
 };
 
 VMwareBackupProvider::VMwareBackupProvider()
-    : connection_(std::make_unique<VMwareConnection>())
+    : connection_(nullptr)
     , progress_(0.0) {
 }
 
-VMwareBackupProvider::VMwareBackupProvider(std::shared_ptr<VMwareConnection> connection)
-    : connection_(std::move(connection))
+VMwareBackupProvider::VMwareBackupProvider(VMwareConnection* connection)
+    : connection_(connection)
     , progress_(0.0) {
 }
 
 VMwareBackupProvider::VMwareBackupProvider(const std::string& connectionString)
-    : connection_(std::make_shared<VMwareConnection>())
+    : connection_(new VMwareConnection())
     , progress_(0.0) {
     // Parse connection string format: "host:port:username:password"
     std::stringstream ss(connectionString);
@@ -134,12 +134,15 @@ VMwareBackupProvider::VMwareBackupProvider(const std::string& connectionString)
     std::getline(ss, password, ':');
 
     if (host.empty() || username.empty() || password.empty()) {
+        delete connection_;
         throw std::runtime_error("Invalid connection string format. Expected: host:port:username:password");
     }
 
     // Connect to vCenter
     if (!connection_->connect(host, username, password)) {
-        throw std::runtime_error("Failed to connect to vCenter: " + connection_->getLastError());
+        std::string error = connection_->getLastError();
+        delete connection_;
+        throw std::runtime_error("Failed to connect to vCenter: " + error);
     }
 }
 
@@ -382,7 +385,8 @@ bool VMwareBackupProvider::startBackup(const std::string& vmId, const BackupConf
         // Start backup job
         std::string backupId = "backup_" + vmId + "_" + std::to_string(std::time(nullptr));
         auto taskManager = std::make_shared<ParallelTaskManager>();
-        activeOperations_[backupId] = std::make_unique<BackupJob>(std::static_pointer_cast<VMwareBackupProvider>(shared_from_this()), taskManager, config);
+        auto job = std::make_unique<BackupJob>(this, taskManager, config);
+        activeOperations_[backupId] = std::move(job);
         
         if (progressCallback_) {
             progressCallback_(0.0);
@@ -503,29 +507,21 @@ bool VMwareBackupProvider::resumeRestore(const std::string& restoreId) {
     return false;
 }
 
-RestoreStatus VMwareBackupProvider::getRestoreStatus(const std::string& restoreId) const {
-    RestoreStatus status;
-    status.state = RestoreState::NotStarted;
-    status.progress = 0.0;
-    status.status = "Unknown";
-    status.startTime = std::chrono::system_clock::now();
-    status.endTime = std::chrono::system_clock::now();
-    status.error = "";
-
+bool VMwareBackupProvider::getRestoreStatus(const std::string& restoreId, RestoreStatus& status) {
     try {
         // Get backup metadata
         std::string metadataPath = restoreId + "/metadata.json";
         if (!std::filesystem::exists(metadataPath)) {
             status.state = RestoreState::Failed;
             status.error = "Backup not found";
-            return status;
+            return false;
         }
 
         std::ifstream file(metadataPath);
         if (!file.is_open()) {
             status.state = RestoreState::Failed;
             status.error = "Failed to open metadata file";
-            return status;
+            return false;
         }
 
         nlohmann::json j;
@@ -534,12 +530,12 @@ RestoreStatus VMwareBackupProvider::getRestoreStatus(const std::string& restoreI
         status.state = RestoreState::Completed;
         status.progress = 100.0;
         status.status = "Completed";
+        return true;
     } catch (const std::exception& e) {
         status.state = RestoreState::Failed;
         status.error = e.what();
+        return false;
     }
-
-    return status;
 }
 
 bool VMwareBackupProvider::verifyBackup(const std::string& backupId) {
@@ -562,6 +558,7 @@ bool VMwareBackupProvider::verifyBackup(const std::string& backupId) {
         for (const auto& entry : std::filesystem::directory_iterator(backupDir)) {
             if (entry.is_regular_file() && entry.path().extension() == ".vmdk") {
                 if (!verifyDisk(entry.path().string())) {
+                    lastError_ = "Failed to verify disk: " + entry.path().string();
                     return false;
                 }
             }

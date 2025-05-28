@@ -14,7 +14,7 @@
 
 class RestoreJob : public Job {
 public:
-    RestoreJob(std::shared_ptr<BackupProvider> provider,
+    RestoreJob(BackupProvider* provider,
                std::shared_ptr<ParallelTaskManager> taskManager,
                const RestoreConfig& config);
     ~RestoreJob() override;
@@ -47,7 +47,7 @@ private:
     void updateOverallProgress();
     void handleDiskTaskCompletion(const std::string& diskPath, bool success, const std::string& error);
 
-    std::shared_ptr<BackupProvider> provider_;
+    BackupProvider* provider_;  // Not owned by RestoreJob
     std::shared_ptr<ParallelTaskManager> taskManager_;
     RestoreConfig config_;
     std::vector<std::string> diskPaths_;

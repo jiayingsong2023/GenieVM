@@ -1,20 +1,23 @@
 #include "backup/restore_job.hpp"
+#include "backup/backup_provider.hpp"
+#include "backup/vm_config.hpp"
+#include "common/parallel_task_manager.hpp"
 #include "common/logger.hpp"
 #include <filesystem>
-#include <stdexcept>
+#include <fstream>
+#include <sstream>
 #include <chrono>
 #include <thread>
-#include <nlohmann/json.hpp>
-#include <random>
-#include <sstream>
-#include <iomanip>
 
-RestoreJob::RestoreJob(std::shared_ptr<BackupProvider> provider,
+using namespace std::filesystem;
+
+RestoreJob::RestoreJob(BackupProvider* provider,
                       std::shared_ptr<ParallelTaskManager> taskManager,
                       const RestoreConfig& config)
     : provider_(provider)
     , taskManager_(taskManager)
     , config_(config) {
+    // Generate a unique job ID
     setId(generateId());
     setStatus("pending");
 }
@@ -26,47 +29,42 @@ RestoreJob::~RestoreJob() {
 }
 
 bool RestoreJob::start() {
-    try {
-        std::lock_guard<std::mutex> lock(mutex_);
-        
-        if (isRunning()) {
-            return false;
-        }
-
-        // Get disk paths for the VM
-        if (!provider_->getVMDiskPaths(config_.vmId, diskPaths_)) {
-            setError("Failed to get VM disk paths: " + provider_->getLastError());
-            return false;
-        }
-
-        // Start restore tasks for each disk
-        for (const auto& diskPath : diskPaths_) {
-            auto taskResult = taskManager_->addTaskWithProgress([this, diskPath]() {
-                return restoreDisk(diskPath);
-            });
-
-            // Store the future and initialize progress
-            diskTasks_[diskPath] = std::move(taskResult.first);
-            diskProgress_[diskPath] = 0;
-
-            // Monitor progress in a separate thread
-            std::thread([this, diskPath, progressPtr = taskResult.second]() {
-                while (diskProgress_[diskPath] < 100) {
-                    diskProgress_[diskPath] = static_cast<int>(progressPtr->getProgress() * 100);
-                    updateOverallProgress();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                }
-            }).detach();
-        }
-
-        setState(State::RUNNING);
-        setStatus("running");
-        updateProgress(0);
-        return true;
-    } catch (const std::exception& e) {
-        setError("Failed to start restore job: " + std::string(e.what()));
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (isRunning()) {
         return false;
     }
+
+    setState(State::RUNNING);
+    setStatus("Starting restore");
+    updateProgress(0);
+
+    // Start restore in a separate thread
+    std::thread([this]() {
+        try {
+            bool success = true;
+            for (const auto& diskConfig : config_.diskConfigs) {
+                if (!restoreDisk(diskConfig.path)) {
+                    success = false;
+                    break;
+                }
+            }
+            
+            if (!success) {
+                setError("Restore failed: " + provider_->getLastError());
+                setState(State::FAILED);
+            } else {
+                setState(State::COMPLETED);
+                setStatus("Restore completed successfully");
+                updateProgress(100);
+            }
+        } catch (const std::exception& e) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            setError(std::string("Restore failed: ") + e.what());
+            setState(State::FAILED);
+        }
+    }).detach();
+
+    return true;
 }
 
 bool RestoreJob::cancel() {
@@ -74,16 +72,8 @@ bool RestoreJob::cancel() {
     if (!isRunning()) {
         return false;
     }
-
-    // Cancel all disk tasks
-    for (auto& [diskPath, future] : diskTasks_) {
-        if (future.valid()) {
-            future.wait();
-        }
-    }
-
     setState(State::CANCELLED);
-    setStatus("cancelled");
+    setStatus("Restore cancelled");
     return true;
 }
 
@@ -92,9 +82,8 @@ bool RestoreJob::pause() {
     if (!isRunning() || isPaused()) {
         return false;
     }
-
     setState(State::PAUSED);
-    setStatus("paused");
+    setStatus("Restore paused");
     return true;
 }
 
@@ -103,9 +92,8 @@ bool RestoreJob::resume() {
     if (!isRunning() || !isPaused()) {
         return false;
     }
-
     setState(State::RUNNING);
-    setStatus("running");
+    setStatus("Restore resumed");
     return true;
 }
 
@@ -145,6 +133,14 @@ std::string RestoreJob::getId() const {
     return Job::getId();
 }
 
+std::string RestoreJob::getVMId() const {
+    return config_.vmId;
+}
+
+std::string RestoreJob::getBackupId() const {
+    return config_.backupId;
+}
+
 bool RestoreJob::restoreDisk(const std::string& diskPath) {
     try {
         // Check if job is paused
@@ -157,60 +153,40 @@ bool RestoreJob::restoreDisk(const std::string& diskPath) {
             return false;
         }
 
-        // Perform disk restore
+        // Perform restore
         if (!provider_->restoreDisk(config_.vmId, diskPath, config_)) {
-            handleDiskTaskCompletion(diskPath, false,
-                "Failed to restore disk: " + provider_->getLastError());
             return false;
         }
 
-        handleDiskTaskCompletion(diskPath, true, "");
         return true;
     } catch (const std::exception& e) {
-        handleDiskTaskCompletion(diskPath, false, e.what());
+        setError(e.what());
         return false;
     }
 }
 
 void RestoreJob::updateOverallProgress() {
-    int totalProgress = 0;
-    for (const auto& [diskPath, progress] : diskProgress_) {
-        totalProgress += progress;
+    if (diskProgress_.empty()) {
+        updateProgress(0);
+        return;
     }
-    totalProgress /= diskProgress_.size();
-    updateProgress(totalProgress);
+
+    int totalProgress = 0;
+    for (const auto& pair : diskProgress_) {
+        totalProgress += pair.second;
+    }
+    updateProgress(totalProgress / diskProgress_.size());
 }
 
 void RestoreJob::handleDiskTaskCompletion(const std::string& diskPath, bool success, const std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);
     
     if (!success) {
-        setError("Disk restore failed: " + error);
+        setError("Failed to restore disk " + diskPath + ": " + error);
         setState(State::FAILED);
-        setStatus("failed");
         return;
     }
 
-    // Check if all disks are completed
-    bool allCompleted = true;
-    for (const auto& [path, future] : diskTasks_) {
-        if (future.valid() && future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
-            allCompleted = false;
-            break;
-        }
-    }
-
-    if (allCompleted) {
-        setState(State::COMPLETED);
-        setStatus("completed");
-        updateProgress(100);
-    }
-}
-
-std::string RestoreJob::getVMId() const {
-    return config_.vmId;
-}
-
-std::string RestoreJob::getBackupId() const {
-    return config_.backupId;
+    diskProgress_[diskPath] = 100;
+    updateOverallProgress();
 } 

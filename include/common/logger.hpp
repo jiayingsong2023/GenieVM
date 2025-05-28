@@ -26,6 +26,7 @@ public:
     static void warning(const std::string& message);
     static void error(const std::string& message);
     static void fatal(const std::string& message);
+    static bool isInitialized() { return initialized_; }
 
 private:
     static void log(LogLevel level, const std::string& message);
