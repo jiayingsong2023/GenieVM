@@ -32,23 +32,29 @@ BackupJob::~BackupJob() {
 bool BackupJob::start() {
     std::lock_guard<std::mutex> lock(mutex_);
     
+    Logger::info("Starting backup job with ID: " + getId());
+    
     if (isRunning() || isCompleted() || isFailed() || isCancelled()) {
+        Logger::error("Cannot start job in current state: " + getStatus());
         setError("Cannot start job in current state");
         return false;
     }
 
     if (!validateBackupConfig()) {
+        Logger::error("Invalid backup configuration for VM: " + config_.vmId);
         setError("Invalid backup configuration");
         setState(State::FAILED);
         return false;
     }
 
     if (!createBackupDirectory()) {
+        Logger::error("Failed to create backup directory: " + config_.backupPath);
         setError("Failed to create backup directory");
         setState(State::FAILED);
         return false;
     }
 
+    Logger::info("Backup job initialized successfully");
     setState(State::RUNNING);
     setStatus("Starting backup");
     updateProgress(0);
@@ -56,9 +62,11 @@ bool BackupJob::start() {
     // Start backup in a separate thread
     std::thread([this]() {
         try {
+            Logger::info("Starting backup execution thread");
             executeBackup();
         } catch (const std::exception& e) {
             std::lock_guard<std::mutex> lock(mutex_);
+            Logger::error("Backup execution failed: " + std::string(e.what()));
             setError(std::string("Backup failed: ") + e.what());
             setState(State::FAILED);
         }
@@ -222,22 +230,30 @@ bool BackupJob::cleanupOldBackups() {
 
 void BackupJob::executeBackup() {
     try {
+        Logger::info("Starting backup execution for VM: " + config_.vmId);
+        
         // Create snapshot before backup
         std::string snapshotId;
+        Logger::info("Creating snapshot for VM: " + config_.vmId);
         if (!provider_->createSnapshot(config_.vmId, snapshotId)) {
+            Logger::error("Failed to create snapshot: " + provider_->getLastError());
             setError("Failed to create snapshot: " + provider_->getLastError());
             setState(State::FAILED);
             return;
         }
+        Logger::info("Snapshot created successfully with ID: " + snapshotId);
 
         // Get VM disk paths
         std::vector<std::string> diskPaths;
+        Logger::info("Getting disk paths for VM: " + config_.vmId);
         if (!provider_->getVMDiskPaths(config_.vmId, diskPaths)) {
+            Logger::error("Failed to get VM disk paths: " + provider_->getLastError());
             provider_->removeSnapshot(config_.vmId, snapshotId); // Cleanup snapshot
             setError("Failed to get VM disk paths: " + provider_->getLastError());
             setState(State::FAILED);
             return;
         }
+        Logger::info("Found " + std::to_string(diskPaths.size()) + " disk(s) to backup");
 
         // Backup each disk
         int totalDisks = diskPaths.size();
@@ -245,6 +261,7 @@ void BackupJob::executeBackup() {
 
         for (const auto& diskPath : diskPaths) {
             if (isCancelled()) {
+                Logger::info("Backup cancelled, cleaning up snapshot");
                 provider_->removeSnapshot(config_.vmId, snapshotId); // Cleanup snapshot
                 setError("Backup cancelled");
                 setState(State::CANCELLED);
@@ -252,31 +269,41 @@ void BackupJob::executeBackup() {
             }
 
             if (isPaused()) {
+                Logger::info("Backup paused, waiting...");
                 std::this_thread::sleep_for(std::chrono::seconds(1));
                 continue;
             }
 
+            Logger::info("Starting backup of disk: " + diskPath);
             if (!provider_->backupDisk(config_.vmId, diskPath, config_)) {
+                Logger::error("Failed to backup disk " + diskPath + ": " + provider_->getLastError());
                 provider_->removeSnapshot(config_.vmId, snapshotId); // Cleanup snapshot
                 setError("Failed to backup disk " + diskPath + ": " + provider_->getLastError());
                 setState(State::FAILED);
                 return;
             }
+            Logger::info("Successfully backed up disk: " + diskPath);
 
             backedUpDisks++;
             updateProgress((backedUpDisks * 100) / totalDisks);
         }
 
         // Remove snapshot after successful backup
+        Logger::info("Removing snapshot after successful backup");
         if (!provider_->removeSnapshot(config_.vmId, snapshotId)) {
+            Logger::warning("Failed to remove snapshot: " + provider_->getLastError());
             setError("Warning: Failed to remove snapshot: " + provider_->getLastError());
             // Continue anyway as the backup was successful
+        } else {
+            Logger::info("Snapshot removed successfully");
         }
 
         setState(State::COMPLETED);
         setStatus("Backup completed successfully");
         updateProgress(100);
+        Logger::info("Backup completed successfully for VM: " + config_.vmId);
     } catch (const std::exception& e) {
+        Logger::error("Backup execution failed: " + std::string(e.what()));
         setError(std::string("Backup failed: ") + e.what());
         setState(State::FAILED);
     }

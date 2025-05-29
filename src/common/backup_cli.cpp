@@ -102,6 +102,7 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
         } else if (arg == "-b" || arg == "--backup-dir") {
             if (i + 1 < argc) {
                 config.backupDir = argv[++i];
+                config.backupPath = config.backupDir; // Set both backupDir and backupPath
                 Logger::debug("Parsed backup directory: " + config.backupDir);
             }
         } else if (arg == "-s" || arg == "--server") {
@@ -124,7 +125,7 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
                 vmType = argv[++i];
                 Logger::debug("Parsed VM type: " + vmType);
             }
-        }else if (arg == "-i" || arg == "--incremental") {
+        } else if (arg == "-i" || arg == "--incremental") {
             config.incremental = true;
         } else if (arg == "--schedule") {
             if (i + 1 < argc) {
@@ -152,7 +153,7 @@ void BackupCLI::handleBackupCommand(int argc, char* argv[]) {
             config.enableCBT = false;
         } else if (arg == "--exclude-disk") {
             if (i + 1 < argc) config.excludedDisks.push_back(argv[++i]);
-        } 
+        }
     }
 
     // Validate required parameters

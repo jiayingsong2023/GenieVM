@@ -1,11 +1,7 @@
 #pragma once
 
 #include <string>
-#include <fstream>
 #include <mutex>
-#include <chrono>
-#include <iomanip>
-#include <sstream>
 
 enum class LogLevel {
     DEBUG,
@@ -17,7 +13,7 @@ enum class LogLevel {
 
 class Logger {
 public:
-    static bool initialize(const std::string& logPath, LogLevel level = LogLevel::INFO);
+    static bool initialize(const std::string& logPath, LogLevel level = LogLevel::DEBUG);
     static void shutdown();
     static void setLogLevel(LogLevel level);
     
@@ -33,7 +29,7 @@ private:
     static std::string levelToString(LogLevel level);
 
     static std::mutex mutex_;
-    static std::ofstream logFile_;
     static LogLevel currentLevel_;
     static bool initialized_;
+    static std::string logPath_;
 }; 
