@@ -10,6 +10,16 @@
 
 using json = nlohmann::json;
 
+// Helper function to get VDDK error text
+std::string getVixErrorText(VixError error) {
+    char* errorText = VixDiskLib_GetErrorTextWrapper(error, nullptr, 0);
+    std::string result(errorText ? errorText : "Unknown error");
+    if (errorText) {
+        VixDiskLib_FreeErrorTextWrapper(errorText);
+    }
+    return result;
+}
+
 VMwareConnection::VMwareConnection()
     : connected_(false), initialized_(false), vddkConnection_(nullptr), restClient_(nullptr), refCount_(0), lastError_("") {
     Logger::debug("VMwareConnection default constructor called");
@@ -71,12 +81,46 @@ bool VMwareConnection::connect(const std::string& host, const std::string& usern
         Logger::error("2. Credentials are correct");
         Logger::error("3. Network connectivity and firewall settings");
         Logger::error("4. SSL/TLS configuration");
-    } else {
-        Logger::info("Successfully connected to vCenter/ESXi");
-        Logger::debug("Connection established with server: " + host + ", username: " + username);
-        Logger::debug("Current ref count after connection: " + std::to_string(refCount_));
+        return false;
     }
-    return connected_;
+    
+    Logger::info("Successfully connected to vCenter/ESXi");
+    Logger::debug("Connection established with server: " + host + ", username: " + username);
+    Logger::debug("Current ref count after connection: " + std::to_string(refCount_));
+
+    // Initialize VDDK
+    if (!initialize()) {
+        lastError_ = "Failed to initialize VDDK";
+        Logger::error(lastError_);
+        return false;
+    }
+
+    // Create VDDK connection
+    VixDiskLibConnectParams connectParams = {0};
+    
+    // Create local copies of strings for VDDK connection
+    std::vector<char> hostCopy(host.begin(), host.end());
+    hostCopy.push_back('\0');
+    std::vector<char> usernameCopy(username.begin(), username.end());
+    usernameCopy.push_back('\0');
+    std::vector<char> passwordCopy(password.begin(), password.end());
+    passwordCopy.push_back('\0');
+
+    connectParams.vmxSpec = hostCopy.data();
+    connectParams.serverName = hostCopy.data();
+    connectParams.credType = VIXDISKLIB_CRED_UID;
+    connectParams.creds.uid.userName = usernameCopy.data();
+    connectParams.creds.uid.password = passwordCopy.data();
+
+    VixError error = VixDiskLib_ConnectWrapper(&connectParams, &vddkConnection_);
+    if (error != VIX_OK) {
+        lastError_ = "Failed to create VDDK connection: " + getVixErrorText(error);
+        Logger::error(lastError_);
+        return false;
+    }
+
+    Logger::info("Successfully created VDDK connection");
+    return true;
 }
 
 void VMwareConnection::disconnect() {
@@ -88,6 +132,22 @@ void VMwareConnection::disconnect() {
             restClient_->logout();
             connected_ = false;
             Logger::debug("Successfully logged out from server: " + server_);
+        }
+
+        // Clean up VDDK connection
+        if (vddkConnection_) {
+            Logger::debug("Disconnecting VDDK connection");
+            VixDiskLib_DisconnectWrapper(&vddkConnection_);
+            vddkConnection_ = nullptr;
+            Logger::debug("Successfully disconnected VDDK connection");
+        }
+
+        // Clean up VDDK
+        if (initialized_) {
+            Logger::debug("Cleaning up VDDK");
+            VixDiskLib_ExitWrapper();
+            initialized_ = false;
+            Logger::debug("Successfully cleaned up VDDK");
         }
     } else {
         Logger::info("Skipping disconnect as there are " + std::to_string(refCount_) + " active operations for server: " + server_);

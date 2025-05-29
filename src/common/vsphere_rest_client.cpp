@@ -471,33 +471,11 @@ bool VSphereRestClient::getVMInfo(const std::string& vmId, nlohmann::json& vmInf
     std::string endpoint = "/rest/vcenter/vm?filter.names=" + vmId;
     nlohmann::json response;
 
-    // Set up verbose logging for CURL
-    curl_easy_setopt(curl_, CURLOPT_VERBOSE, 1L);
-    FILE* verbose = fopen("/tmp/curl_verbose.log", "a");
-    if (verbose) {
-        fprintf(verbose, "\n=== VM Info Request ===\n");
-        fprintf(verbose, "URL: https://%s%s\n", host_.c_str(), endpoint.c_str());
-        fprintf(verbose, "Method: GET\n");
-        fprintf(verbose, "Headers:\n");
-        fprintf(verbose, "  Content-Type: application/json\n");
-        fprintf(verbose, "  Accept: application/json\n");
-        if (!sessionId_.empty()) {
-            fprintf(verbose, "  vmware-api-session-id: %s\n", sessionId_.c_str());
-        }
-        curl_easy_setopt(curl_, CURLOPT_STDERR, verbose);
-    }
-
     // Explicitly set GET method and ensure it's not overridden
     curl_easy_setopt(curl_, CURLOPT_HTTPGET, 1L);
     curl_easy_setopt(curl_, CURLOPT_CUSTOMREQUEST, "GET");
 
     bool success = makeRequest("GET", endpoint, nlohmann::json(), response);
-
-    if (verbose) {
-        fprintf(verbose, "\nResponse Code: %d\n", success ? 200 : 400);
-        fprintf(verbose, "Response Body: %s\n", response.dump().c_str());
-        fclose(verbose);
-    }
 
     // The response should contain the VM info directly
     if (response.contains("value") && !response["value"].empty()) {
@@ -509,16 +487,65 @@ bool VSphereRestClient::getVMInfo(const std::string& vmId, nlohmann::json& vmInf
     return false;
 }
 
-bool VSphereRestClient::getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) {
-    nlohmann::json response;
-    if (!makeRequest("GET", "/rest/vcenter/vm/" + vmId + "/hardware/disk", nlohmann::json(), response)) {
+bool VSphereRestClient::getVMDiskPaths(const std::string& vmName, std::vector<std::string>& diskPaths) {
+    Logger::info("Getting disk paths for VM: " + vmName);
+    
+    // Step 1: Get VM ID from VM name
+    nlohmann::json vmInfo;
+    if (!getVMInfo(vmName, vmInfo)) {
+        Logger::error("Failed to get VM ID for VM: " + vmName);
         return false;
     }
-    
-    for (const auto& disk : response["value"]) {
-        diskPaths.push_back(disk["value"].get<std::string>());
+    std::string vmId = vmInfo["vm"].get<std::string>();
+    Logger::debug("Got VM ID: " + vmId + " for VM: " + vmName);
+
+    // Step 2: Get disk numbers for the VM
+    nlohmann::json response;
+    if (!makeRequest("GET", "/rest/vcenter/vm/" + vmId + "/hardware/disk", nlohmann::json(), response)) {
+        Logger::error("Failed to get disk numbers for VM: " + vmId);
+        return false;
     }
-    return true;
+
+    // Parse disk numbers from response
+    try {
+        std::vector<std::string> diskNumbers;
+        for (const auto& disk : response["value"]) {
+            diskNumbers.push_back(disk["disk"].get<std::string>());
+        }
+        Logger::debug("Found " + std::to_string(diskNumbers.size()) + " disk(s)");
+
+        // Step 3: Get disk path for each disk number
+        for (const auto& diskNumber : diskNumbers) {
+            nlohmann::json diskResponse;
+            if (!makeRequest("GET", "/rest/vcenter/vm/" + vmId + "/hardware/disk/" + diskNumber, nlohmann::json(), diskResponse)) {
+                Logger::error("Failed to get disk path for disk " + diskNumber);
+                continue;
+            }
+
+            // Parse disk path from response
+            if (diskResponse["value"].contains("backing") && 
+                diskResponse["value"]["backing"].contains("vmdk_file")) {
+                std::string vmdkPath = diskResponse["value"]["backing"]["vmdk_file"].get<std::string>();
+                
+                // VDDK expects paths in the format: [datastore] path/to/vmdk
+                // Example: [ogilvie_local_datastore01] jackrh8vm/jackrh8vm.vmdk
+                // The path we get from the API is already in this format, so we can use it directly
+                Logger::debug("Found disk path: " + vmdkPath);
+                diskPaths.push_back(vmdkPath);
+            }
+        }
+
+        if (diskPaths.empty()) {
+            Logger::error("No valid disk paths found for VM: " + vmId);
+            return false;
+        }
+
+        Logger::info("Successfully retrieved " + std::to_string(diskPaths.size()) + " disk path(s)");
+        return true;
+    } catch (const std::exception& e) {
+        Logger::error("Failed to parse response: " + std::string(e.what()));
+        return false;
+    }
 }
 
 bool VSphereRestClient::getVMDiskInfo(const std::string& vmId, const std::string& diskPath, nlohmann::json& diskInfo) {
@@ -581,17 +608,22 @@ bool VSphereRestClient::rebootVM(const std::string& vmId) {
 }
 
 bool VSphereRestClient::createSnapshot(const std::string& vmId, const std::string& name, const std::string& description) {
-    nlohmann::json data = {
-        {"name", name},
-        {"description", description}
-    };
-    nlohmann::json response;
-    return makeRequest("POST", "/rest/vcenter/vm/" + vmId + "/snapshot", data, response);
+    // FixMe: For now, we don't create snapshots, we just return true
+    //nlohmann::json data = {
+    //    {"name", name},
+    //    {"description", description}
+    //};
+    //nlohmann::json response;
+    //return makeRequest("POST", "/rest/vcenter/vm/" + vmId + "/snapshot", data, response);
+
+    return true;
 }
 
 bool VSphereRestClient::removeSnapshot(const std::string& vmId, const std::string& snapshotId) {
-    nlohmann::json response;
-    return makeRequest("DELETE", "/rest/vcenter/vm/" + vmId + "/snapshot/" + snapshotId, nlohmann::json(), response);
+    // FixMe: For now, we don't remove snapshots, we just return true
+    //nlohmann::json response;
+    //return makeRequest("DELETE", "/rest/vcenter/vm/" + vmId + "/snapshot/" + snapshotId, nlohmann::json(), response);
+    return true;
 }
 
 bool VSphereRestClient::revertToSnapshot(const std::string& vmId, const std::string& snapshotId) {

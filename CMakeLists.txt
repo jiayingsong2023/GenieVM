@@ -22,16 +22,13 @@ set(CMAKE_SKIP_BUILD_RPATH FALSE)
 set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
-# Set library search path
-link_directories(${VDDK_LIB_DIR})
-
 # Find required packages
 find_package(CURL REQUIRED)
 if(NOT CURL_FOUND)
     message(FATAL_ERROR "libcurl not found. Please install libcurl4-openssl-dev package.")
 endif()
 
-# Use system's libcurl
+# Use system's libcurl for main code
 set(CURL_LIBRARIES "/usr/lib/x86_64-linux-gnu/libcurl.so")
 
 find_package(nlohmann_json REQUIRED)
@@ -67,29 +64,20 @@ find_library(VDDK_LIBRARY
     REQUIRED
 )
 
-# Find VDDK's dependencies
+# Define VDDK dependencies (only for VDDK wrapper)
 set(VDDK_DEPS
     "${VDDK_LIB_DIR}/libstdc++.so.6"
     "${VDDK_LIB_DIR}/libcrypto.so.1.0.2"
     "${VDDK_LIB_DIR}/libssl.so.1.0.2"
     "${VDDK_LIB_DIR}/libcurl.so.4"
-    "${VDDK_LIB_DIR}/libxml2.so.2"
     "${VDDK_LIB_DIR}/libz.so.1"
     "${VDDK_LIB_DIR}/libcares.so.2"
 )
 
-# Check each VDDK dependency and use system libraries if not found
+# Check each VDDK dependency
 foreach(dep ${VDDK_DEPS})
-    get_filename_component(dep_name ${dep} NAME)
     if(NOT EXISTS ${dep})
-        message(STATUS "VDDK dependency not found: ${dep}, using system library")
-        # Try to find the system library
-        find_library(SYSTEM_${dep_name} ${dep_name})
-        if(SYSTEM_${dep_name})
-            list(APPEND VDDK_DEPS ${SYSTEM_${dep_name}})
-        else()
-            message(WARNING "System library not found: ${dep_name}")
-        endif()
+        message(FATAL_ERROR "Required VDDK dependency not found: ${dep}")
     endif()
 endforeach()
 
@@ -125,8 +113,7 @@ target_compile_definitions(vddk_wrapper PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
 target_link_libraries(vddk_wrapper
     PRIVATE
         ${VDDK_LIBRARY}
-        ${VDDK_LIB_DIR}/libcurl.so.4
-        ${VDDK_LIB_DIR}/libstdc++.so.6
+        ${VDDK_DEPS}
         dl
         pthread
 )
@@ -161,11 +148,9 @@ set(SOURCES
 
     # Backup VMware files
     src/backup/vmware/vmware_backup_provider.cpp
-    src/backup/vmware/disk_backup.cpp
 
     # Restore files
     src/restore/restore_job.cpp
-    src/restore/vmware/disk_restore.cpp
 
     # Common files
     src/common/backup_cli.cpp
@@ -195,13 +180,12 @@ target_include_directories(genievm
 target_link_libraries(genievm
     PRIVATE
         vddk_wrapper
-        /usr/lib/x86_64-linux-gnu/libcurl.so
+        ${CURL_LIBRARIES}
         ${LIBVIRT_LIBRARIES}
         ${OPENSSL_LIBRARIES}
         ${nlohmann_json_LIBRARIES}
         pthread
         dl
-        /usr/lib/x86_64-linux-gnu/libstdc++.so.6
 )
 
 # Set RPATH for main executable to use system libraries
@@ -212,6 +196,9 @@ set_target_properties(genievm PROPERTIES
     INSTALL_RPATH_USE_LINK_PATH TRUE
     LINK_DEPENDS_NO_SHARED TRUE
 )
+
+# Add subdirectories after vddk_wrapper is defined
+add_subdirectory(src)
 
 # Install
 install(TARGETS genievm vddk_wrapper DESTINATION bin)

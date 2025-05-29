@@ -20,9 +20,9 @@ class ParallelTaskManager;
 
 class VMwareBackupProvider : public BackupProvider, public std::enable_shared_from_this<VMwareBackupProvider> {
 public:
-    VMwareBackupProvider();
+    //VMwareBackupProvider();
     explicit VMwareBackupProvider(VMwareConnection* connection);  // Does not take ownership
-    explicit VMwareBackupProvider(const std::string& connectionString);
+    //explicit VMwareBackupProvider(const std::string& connectionString);
     ~VMwareBackupProvider() override;
 
     // Connection management
@@ -104,7 +104,7 @@ private:
 
     void updateProgress(double progress, const std::string& status);
     void handleError(int32_t error);
-    bool initializeVDDK();
+    //bool initializeVDDK();
 };
 
 #endif // VMWARE_BACKUP_PROVIDER_HPP 

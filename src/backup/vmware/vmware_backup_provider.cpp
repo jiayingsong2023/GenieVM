@@ -92,7 +92,7 @@ private:
 };
 
 // RAII wrapper for VDDK connection
-class VDDKConnectionManager {
+/*class VDDKConnectionManager {
 public:
     VDDKConnectionManager() {
         int32_t vixError = VixDiskLib_InitWrapper(VIXDISKLIB_VERSION_MAJOR,
@@ -110,12 +110,13 @@ public:
     // Delete copy operations
     VDDKConnectionManager(const VDDKConnectionManager&) = delete;
     VDDKConnectionManager& operator=(const VDDKConnectionManager&) = delete;
-};
+}; 
+*/
 
-VMwareBackupProvider::VMwareBackupProvider()
-    : connection_(nullptr)
-    , progress_(0.0) {
-}
+//VMwareBackupProvider::VMwareBackupProvider()
+//    : connection_(nullptr)
+//    , progress_(0.0) {
+//}
 
 VMwareBackupProvider::VMwareBackupProvider(VMwareConnection* connection)
     : connection_(connection)
@@ -126,6 +127,7 @@ VMwareBackupProvider::VMwareBackupProvider(VMwareConnection* connection)
     }
 }
 
+/*
 VMwareBackupProvider::VMwareBackupProvider(const std::string& connectionString)
     : connection_(new VMwareConnection())
     , progress_(0.0) {
@@ -149,6 +151,7 @@ VMwareBackupProvider::VMwareBackupProvider(const std::string& connectionString)
         throw std::runtime_error("Failed to connect to vCenter: " + error);
     }
 }
+*/
 
 VMwareBackupProvider::~VMwareBackupProvider() {
     disconnect();
@@ -785,47 +788,68 @@ bool VMwareBackupProvider::backupDisk(const std::string& vmId, const std::string
         // Create backup directory if it doesn't exist
         std::filesystem::create_directories(config.backupPath);
 
+        // Get VDDK connection
+        VDDKConnection vddkConn = connection_->getVDDKConnection();
+        if (!vddkConn) {
+            lastError_ = "Failed to get VDDK connection";
+            Logger::error(lastError_);
+            return false;
+        }
+
+        // Validate disk path format
+        if (diskPath.empty() || diskPath[0] != '[' || diskPath.find(']') == std::string::npos) {
+            lastError_ = "Invalid disk path format. Expected format: [datastore] path/to/vmdk";
+            Logger::error(lastError_);
+            return false;
+        }
+
+        Logger::debug("Using disk path: " + diskPath);
+
         // Open source disk
         VDDKHandle sourceHandle;
-        int32_t result = VixDiskLib_OpenWrapper(connection_->getVDDKConnection(),
+        int32_t result = VixDiskLib_OpenWrapper(vddkConn,
                                               diskPath.c_str(),
                                               VIXDISKLIB_FLAG_OPEN_READ_ONLY,
                                               &sourceHandle);
         if (result != VIX_OK) {
-            lastError_ = "Failed to open source disk";
+            lastError_ = "Failed to open source disk: " + vixErrorToString(result);
+            Logger::error(lastError_);
             return false;
         }
 
         // Create backup file path
         std::string backupDiskPath = config.backupPath + "/" + std::filesystem::path(diskPath).filename().string();
+        Logger::debug("Creating backup disk at: " + backupDiskPath);
 
         // Create target disk
-        VDDKCreateParams createParams;
+        VixDiskLibCreateParams createParams;
         memset(&createParams, 0, sizeof(createParams));
         createParams.diskType = static_cast<VixDiskLibDiskType>(VIXDISKLIB_DISK_MONOLITHIC_SPARSE);
         createParams.adapterType = static_cast<VixDiskLibAdapterType>(VIXDISKLIB_ADAPTER_SCSI_LSILOGIC);
         createParams.hwVersion = VIXDISKLIB_HWVERSION_WORKSTATION_5;
 
-        result = VixDiskLib_CreateWrapper(connection_->getVDDKConnection(),
+        result = VixDiskLib_CreateWrapper(vddkConn,
                                         backupDiskPath.c_str(),
                                         &createParams,
                                         nullptr,
                                         nullptr);
         if (result != VIX_OK) {
             VixDiskLib_CloseWrapper(&sourceHandle);
-            lastError_ = "Failed to create backup disk";
+            lastError_ = "Failed to create backup disk: " + vixErrorToString(result);
+            Logger::error(lastError_);
             return false;
         }
 
         // Open backup disk
         VDDKHandle backupHandle;
-        result = VixDiskLib_OpenWrapper(connection_->getVDDKConnection(),
+        result = VixDiskLib_OpenWrapper(vddkConn,
                                       backupDiskPath.c_str(),
                                       VIXDISKLIB_FLAG_OPEN_UNBUFFERED,
                                       &backupHandle);
         if (result != VIX_OK) {
             VixDiskLib_CloseWrapper(&sourceHandle);
-            lastError_ = "Failed to open backup disk";
+            lastError_ = "Failed to open backup disk: " + vixErrorToString(result);
+            Logger::error(lastError_);
             return false;
         }
 
@@ -835,46 +859,21 @@ bool VMwareBackupProvider::backupDisk(const std::string& vmId, const std::string
         if (result != VIX_OK) {
             VixDiskLib_CloseWrapper(&sourceHandle);
             VixDiskLib_CloseWrapper(&backupHandle);
-            lastError_ = "Failed to get disk info";
+            lastError_ = "Failed to get disk info: " + vixErrorToString(result);
+            Logger::error(lastError_);
             return false;
         }
 
-        // Copy disk data
-        const size_t bufferSize = 1024 * 1024;  // 1MB buffer
-        std::vector<uint8_t> buffer(bufferSize);
-        uint64_t totalSectors = diskInfo->capacity;
-        uint64_t sectorsProcessed = 0;
-
-        while (sectorsProcessed < totalSectors) {
-            uint64_t sectorsToRead = std::min(static_cast<uint64_t>(bufferSize / VIXDISKLIB_SECTOR_SIZE),
-                                            totalSectors - sectorsProcessed);
-
-            result = VixDiskLib_ReadWrapper(sourceHandle,
-                                          sectorsProcessed,
-                                          sectorsToRead,
-                                          buffer.data());
-            if (result != VIX_OK) {
-                VixDiskLib_FreeInfoWrapper(diskInfo);
-                VixDiskLib_CloseWrapper(&sourceHandle);
-                VixDiskLib_CloseWrapper(&backupHandle);
-                lastError_ = "Failed to read source disk";
-                return false;
-            }
-
-            result = VixDiskLib_WriteWrapper(backupHandle,
-                                           sectorsProcessed,
-                                           sectorsToRead,
-                                           buffer.data());
-            if (result != VIX_OK) {
-                VixDiskLib_FreeInfoWrapper(diskInfo);
-                VixDiskLib_CloseWrapper(&sourceHandle);
-                VixDiskLib_CloseWrapper(&backupHandle);
-                lastError_ = "Failed to write backup disk";
-                return false;
-            }
-
-            sectorsProcessed += sectorsToRead;
-            progress_ = static_cast<double>(sectorsProcessed) / totalSectors * 100.0;
+        // Copy disk contents
+        Logger::info("Starting disk copy operation...");
+        result = VixDiskLib_CloneWrapper(vddkConn, backupDiskPath.c_str(), vddkConn, diskPath.c_str(), &createParams, nullptr, nullptr, FALSE);
+        if (result != VIX_OK) {
+            VixDiskLib_FreeInfoWrapper(diskInfo);
+            VixDiskLib_CloseWrapper(&sourceHandle);
+            VixDiskLib_CloseWrapper(&backupHandle);
+            lastError_ = "Failed to copy disk contents: " + vixErrorToString(result);
+            Logger::error(lastError_);
+            return false;
         }
 
         // Cleanup
@@ -882,9 +881,11 @@ bool VMwareBackupProvider::backupDisk(const std::string& vmId, const std::string
         VixDiskLib_CloseWrapper(&sourceHandle);
         VixDiskLib_CloseWrapper(&backupHandle);
 
+        Logger::info("Successfully backed up disk: " + diskPath);
         return true;
     } catch (const std::exception& e) {
         lastError_ = std::string("Backup failed: ") + e.what();
+        Logger::error(lastError_);
         return false;
     }
 }
@@ -1227,6 +1228,7 @@ void VMwareBackupProvider::updateProgress(double progress, const std::string& st
     }
 }
 
+/*
 bool VMwareBackupProvider::initializeVDDK() {
     try {
         updateProgress(0.0, "Initializing VDDK");
@@ -1247,6 +1249,7 @@ bool VMwareBackupProvider::initializeVDDK() {
         return false;
     }
 }
+*/
 
 double VMwareBackupProvider::getProgress() const {
     std::lock_guard<std::mutex> lock(mutex_);

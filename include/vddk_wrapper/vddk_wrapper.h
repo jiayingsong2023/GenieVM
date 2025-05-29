@@ -143,64 +143,22 @@ typedef VixError VixError;
 #define TRUE 1
 #define FALSE 0
 
-// Function declarations
-VixError VixDiskLib_InitWrapper(uint32_t majorVersion,
-                               uint32_t minorVersion,
-                               const char* configFile);
-
+// VDDK wrapper function declarations
+VixError VixDiskLib_InitWrapper(uint32_t majorVersion, uint32_t minorVersion, void* unused);
 void VixDiskLib_ExitWrapper();
-
-VixError VixDiskLib_ConnectWrapper(const VDDKConnectParams* connectParams,
-                                  VDDKConnection* connection);
-
+VixError VixDiskLib_ConnectWrapper(const VixDiskLibConnectParams* connectParams, VDDKConnection* connection);
 VixError VixDiskLib_DisconnectWrapper(VDDKConnection* connection);
-
-VixError VixDiskLib_OpenWrapper(const VDDKConnection connection,
-                               const char* path,
-                               uint32_t flags,
-                               VDDKHandle* handle);
-
+VixError VixDiskLib_OpenWrapper(const VDDKConnection connection, const char* path, uint32_t flags, VDDKHandle* handle);
 VixError VixDiskLib_CloseWrapper(VDDKHandle* handle);
-
-VixError VixDiskLib_GetInfoWrapper(VDDKHandle handle,
-                                  VDDKInfo** info);
-
+VixError VixDiskLib_GetInfoWrapper(VDDKHandle handle, VDDKInfo** info);
 VixError VixDiskLib_FreeInfoWrapper(VDDKInfo* info);
-
-VixError VixDiskLib_CreateWrapper(const VDDKConnection connection,
-                                 const char* path,
-                                 const VDDKCreateParams* createParams,
-                                 void (*progressFunc)(void* data, int percent),
-                                 void* progressCallbackData);
-
-VixError VixDiskLib_CloneWrapper(const VDDKConnection connection,
-                                const char* path,
-                                const VDDKConnection srcConnection,
-                                const char* srcPath,
-                                const VDDKCreateParams* createParams,
-                                void (*progressFunc)(void* data, int percent),
-                                void* progressCallbackData,
-                                bool doInflate);
-
-VixError VixDiskLib_QueryAllocatedBlocksWrapper(VDDKHandle handle,
-                                               VixDiskLibSectorType startSector,
-                                               VixDiskLibSectorType numSectors,
-                                               VDDKBlockList** blockList);
-
+VixError VixDiskLib_CreateWrapper(const VDDKConnection connection, const char* path, const VDDKCreateParams* createParams, void (*progressFunc)(void* data, int percent), void* progressCallbackData);
+VixError VixDiskLib_CloneWrapper(const VDDKConnection connection, const char* path, const VDDKConnection srcConnection, const char* srcPath, const VDDKCreateParams* createParams, void (*progressFunc)(void* data, int percent), void* progressCallbackData, bool doInflate);
+VixError VixDiskLib_ReadWrapper(VDDKHandle handle, VixDiskLibSectorType startSector, VixDiskLibSectorType numSectors, uint8_t* buffer);
+VixError VixDiskLib_WriteWrapper(VDDKHandle handle, VixDiskLibSectorType startSector, VixDiskLibSectorType numSectors, const uint8_t* buffer);
+VixError VixDiskLib_QueryAllocatedBlocksWrapper(VDDKHandle handle, VixDiskLibSectorType startSector, VixDiskLibSectorType numSectors, VDDKBlockList** blockList);
 void VixDiskLib_FreeBlockListWrapper(VDDKBlockList* blockList);
-
-VixError VixDiskLib_ReadWrapper(VDDKHandle handle,
-                               VixDiskLibSectorType startSector,
-                               VixDiskLibSectorType numSectors,
-                               uint8_t* buffer);
-
-VixError VixDiskLib_WriteWrapper(VDDKHandle handle,
-                                VixDiskLibSectorType startSector,
-                                VixDiskLibSectorType numSectors,
-                                const uint8_t* buffer);
-
 char* VixDiskLib_GetErrorTextWrapper(VixError error, char* buffer, size_t bufferSize);
-
 void VixDiskLib_FreeErrorTextWrapper(char* errorText);
 
 #ifdef __cplusplus

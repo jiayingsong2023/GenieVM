@@ -1,5 +1,4 @@
 add_library(vmware-backup-lib
-    backup/vmware/disk_backup.cpp
     backup/vmware/vmware_backup_provider.cpp
     backup/kvm/kvm_backup_provider.cpp
     backup/backup_provider_factory.cpp
@@ -13,7 +12,6 @@ add_library(vmware-backup-lib
 )
 
 add_library(vmware-restore-lib
-    restore/vmware/disk_restore.cpp
     common/vmware_connection.cpp
     common/logger.cpp
     common/parallel_task_manager.cpp
@@ -32,6 +30,7 @@ target_include_directories(vmware-restore-lib
 # Add dependencies
 target_link_libraries(vmware-backup-lib
     PRIVATE
+    vddk_wrapper
     pthread
     dl
     ssl
@@ -41,9 +40,19 @@ target_link_libraries(vmware-backup-lib
 
 target_link_libraries(vmware-restore-lib
     PRIVATE
+    vddk_wrapper
     pthread
     dl
     ssl
     crypto
     z
+)
+
+# Set RPATH for both libraries to use system libraries
+set_target_properties(vmware-backup-lib vmware-restore-lib PROPERTIES
+    INSTALL_RPATH "/usr/lib/x86_64-linux-gnu"
+    BUILD_WITH_INSTALL_RPATH TRUE
+    SKIP_BUILD_RPATH FALSE
+    INSTALL_RPATH_USE_LINK_PATH TRUE
+    LINK_DEPENDS_NO_SHARED TRUE
 ) 
