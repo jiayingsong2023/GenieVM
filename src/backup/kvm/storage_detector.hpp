@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <sys/ioctl.h>
@@ -34,4 +35,4 @@ public:
     static bool isLVM(const std::string& path);
     static bool isRaw(const std::string& path);
     static uint64_t getDeviceSize(const std::string& path);
-}; 
+};

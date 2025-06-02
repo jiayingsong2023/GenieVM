@@ -66,12 +66,12 @@ find_library(VDDK_LIBRARY
 
 # Define VDDK dependencies (only for VDDK wrapper)
 set(VDDK_DEPS
-    "${VDDK_LIB_DIR}/libstdc++.so.6"
-    "${VDDK_LIB_DIR}/libcrypto.so.1.0.2"
-    "${VDDK_LIB_DIR}/libssl.so.1.0.2"
-    "${VDDK_LIB_DIR}/libcurl.so.4"
-    "${VDDK_LIB_DIR}/libz.so.1"
-    "${VDDK_LIB_DIR}/libcares.so.2"
+    "${VDDK_LIB_DIR}/libstdc++.so"
+    "${VDDK_LIB_DIR}/libcrypto.so"
+    "${VDDK_LIB_DIR}/libssl.so"
+    "${VDDK_LIB_DIR}/libcurl.so"
+    "${VDDK_LIB_DIR}/libz.so"
+    "${VDDK_LIB_DIR}/libcares.so"
 )
 
 # Check each VDDK dependency
