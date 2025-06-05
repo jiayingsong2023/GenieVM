@@ -1,5 +1,4 @@
-#ifndef VMWARE_CONNECTION_HPP
-#define VMWARE_CONNECTION_HPP
+#pragma once
 
 #include <string>
 #include <vector>
@@ -21,9 +20,6 @@ public:
     VMwareConnection();
     VMwareConnection(const std::string& host, const std::string& username, const std::string& password);
     ~VMwareConnection();
-
-    // Initialize VDDK library
-    bool initialize();
 
     // Connect to vCenter/ESXi
     bool connect(const std::string& host,
@@ -79,6 +75,9 @@ public:
     bool getBackup(const std::string& backupId, nlohmann::json& backupInfo);
     bool verifyBackup(const std::string& backupId, nlohmann::json& response);
 
+    // VDDK specific functions
+    bool vddkInitialize(const std::string& vmId);
+
 private:
     std::string server_;
     std::string username_;
@@ -91,6 +90,4 @@ private:
     VDDKConnection vddkConnection_;
     VSphereRestClient* restClient_;
     int refCount_;  // Track number of active operations
-};
-
-#endif // VMWARE_CONNECTION_HPP 
+}; 

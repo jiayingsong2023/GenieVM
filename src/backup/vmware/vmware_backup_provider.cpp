@@ -324,6 +324,12 @@ bool VMwareBackupProvider::startBackup(const std::string& vmId, const BackupConf
         }
         Logger::info("Successfully retrieved VM info");
 
+        // Initialize VDDK connection
+        if (!connection_->vddkInitialize(vmId)) {
+            Logger::error("Failed to initialize VDDK connection");
+            return false;
+        }
+
         // Create backup directory if it doesn't exist
         Logger::debug("Creating backup directory: " + config.backupPath);
         std::filesystem::create_directories(config.backupPath);

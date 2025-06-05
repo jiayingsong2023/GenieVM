@@ -11,9 +11,8 @@ ORIGINAL_LD_PRELOAD=$LD_PRELOAD
 export CMAKE_BUILD_TYPE=Debug
 export CMAKE_CXX_FLAGS="-g -O0 -Wall -Wextra -DDEBUG" 
 
-# Clear VDDK-related environment variables for build
-unset LD_LIBRARY_PATH
-unset LD_PRELOAD
+# Set VDDK library path
+export LD_LIBRARY_PATH="/usr/local/vddk/lib64:$LD_LIBRARY_PATH"
 
 # Function to clean build directory
 clean() {

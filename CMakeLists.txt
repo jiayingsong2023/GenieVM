@@ -28,8 +28,8 @@ if(NOT CURL_FOUND)
     message(FATAL_ERROR "libcurl not found. Please install libcurl4-openssl-dev package.")
 endif()
 
-# Use system's libcurl for main code
-set(CURL_LIBRARIES "/usr/lib/x86_64-linux-gnu/libcurl.so")
+# Use VDDK's libcurl instead of system's libcurl
+set(CURL_LIBRARIES "${VDDK_LIB_DIR}/libcurl.so")
 
 find_package(nlohmann_json REQUIRED)
 if(NOT nlohmann_json_FOUND)
@@ -97,6 +97,7 @@ include_directories(
 # Build VDDK wrapper as a shared library with old ABI
 add_library(vddk_wrapper SHARED
     src/vddk_wrapper/vddk_wrapper.cpp
+    src/common/logger.cpp
 )
 
 # Set include directories for VDDK wrapper
@@ -104,6 +105,7 @@ target_include_directories(vddk_wrapper
     PUBLIC
         ${CMAKE_SOURCE_DIR}/include
         ${VDDK_INCLUDE_DIR}
+        ${CMAKE_SOURCE_DIR}/src
 )
 
 # Set old ABI for VDDK wrapper only
@@ -176,11 +178,11 @@ target_include_directories(genievm
         ${LIBVIRT_INCLUDE_DIRS}
 )
 
-# Link libraries for main executable (using system libraries)
+# Link libraries for main executable (using VDDK's libraries)
 target_link_libraries(genievm
     PRIVATE
         vddk_wrapper
-        ${CURL_LIBRARIES}
+        ${CURL_LIBRARIES}  # This is now VDDK's libcurl
         ${LIBVIRT_LIBRARIES}
         ${OPENSSL_LIBRARIES}
         ${nlohmann_json_LIBRARIES}
@@ -188,9 +190,9 @@ target_link_libraries(genievm
         dl
 )
 
-# Set RPATH for main executable to use system libraries
+# Set RPATH for main executable to use VDDK libraries
 set_target_properties(genievm PROPERTIES
-    INSTALL_RPATH "/usr/lib/x86_64-linux-gnu"
+    INSTALL_RPATH "${VDDK_ROOT}/lib64"
     BUILD_WITH_INSTALL_RPATH TRUE
     SKIP_BUILD_RPATH FALSE
     INSTALL_RPATH_USE_LINK_PATH TRUE

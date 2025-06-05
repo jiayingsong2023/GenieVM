@@ -152,8 +152,8 @@ VixError VixDiskLib_OpenWrapper(const VDDKConnection connection, const char* pat
 VixError VixDiskLib_CloseWrapper(VDDKHandle* handle);
 VixError VixDiskLib_GetInfoWrapper(VDDKHandle handle, VDDKInfo** info);
 VixError VixDiskLib_FreeInfoWrapper(VDDKInfo* info);
-VixError VixDiskLib_CreateWrapper(const VDDKConnection connection, const char* path, const VDDKCreateParams* createParams, void (*progressFunc)(void* data, int percent), void* progressCallbackData);
-VixError VixDiskLib_CloneWrapper(const VDDKConnection connection, const char* path, const VDDKConnection srcConnection, const char* srcPath, const VDDKCreateParams* createParams, void (*progressFunc)(void* data, int percent), void* progressCallbackData, bool doInflate);
+VixError VixDiskLib_CreateWrapper(const VDDKConnection connection, const char* path, const VDDKCreateParams* createParams, VixDiskLibProgressFunc progressFunc, void* progressCallbackData);
+VixError VixDiskLib_CloneWrapper(const VDDKConnection connection, const char* path, const VDDKConnection srcConnection, const char* srcPath, const VDDKCreateParams* createParams, VixDiskLibProgressFunc progressFunc, void* progressCallbackData, bool doInflate);
 VixError VixDiskLib_ReadWrapper(VDDKHandle handle, VixDiskLibSectorType startSector, VixDiskLibSectorType numSectors, uint8_t* buffer);
 VixError VixDiskLib_WriteWrapper(VDDKHandle handle, VixDiskLibSectorType startSector, VixDiskLibSectorType numSectors, const uint8_t* buffer);
 VixError VixDiskLib_QueryAllocatedBlocksWrapper(VDDKHandle handle, VixDiskLibSectorType startSector, VixDiskLibSectorType numSectors, VDDKBlockList** blockList);

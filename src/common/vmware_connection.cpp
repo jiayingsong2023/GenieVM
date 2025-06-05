@@ -1,6 +1,7 @@
 #include "common/logger.hpp"
 #include "common/vmware_connection.hpp"
 #include "common/vsphere_rest_client.hpp"
+#include "common/utils.hpp"
 #include <nlohmann/json.hpp>
 #include <curl/curl.h>
 #include <sstream>
@@ -88,25 +89,46 @@ bool VMwareConnection::connect(const std::string& host, const std::string& usern
     Logger::debug("Connection established with server: " + host + ", username: " + username);
     Logger::debug("Current ref count after connection: " + std::to_string(refCount_));
 
-    // Initialize VDDK
-    if (!initialize()) {
-        lastError_ = "Failed to initialize VDDK";
-        Logger::error(lastError_);
+    return true;
+}
+
+bool VMwareConnection::vddkInitialize(const std::string& vmId) {
+    Logger::info("Initializing VDDK for VM: " + vmId);
+
+    // Initialize VDDK with basic configuration
+    VixError vixError = VixDiskLib_InitWrapper(VIXDISKLIB_VERSION_MAJOR,
+                                             VIXDISKLIB_VERSION_MINOR,
+                                             nullptr);
+    if (vixError != VIX_OK) {
+        char* errorMsg = VixDiskLib_GetErrorTextWrapper(vixError, nullptr, 0);
+        if (errorMsg) {
+            lastError_ = errorMsg;
+            VixDiskLib_FreeErrorTextWrapper(errorMsg);
+        }
+        Logger::error("Failed to initialize VDDK: " + lastError_);
         return false;
     }
+    initialized_ = true;
 
     // Create VDDK connection
     VixDiskLibConnectParams connectParams = {0};
     
     // Create local copies of strings for VDDK connection
-    std::vector<char> hostCopy(host.begin(), host.end());
+    std::vector<char> hostCopy(server_.begin(), server_.end());
     hostCopy.push_back('\0');
-    std::vector<char> usernameCopy(username.begin(), username.end());
+    std::vector<char> usernameCopy(username_.begin(), username_.end());
     usernameCopy.push_back('\0');
-    std::vector<char> passwordCopy(password.begin(), password.end());
+    std::vector<char> passwordCopy(password_.begin(), password_.end());
     passwordCopy.push_back('\0');
 
-    connectParams.vmxSpec = hostCopy.data();
+    // For vCenter, we need to use the correct format for vmxSpec with URL encoded credentials
+    std::string encodedUsername = utils::urlEncode(username_);
+    std::string encodedPassword = utils::urlEncode(password_);
+    std::string vmxSpec = "vi://" + encodedUsername + ":" + encodedPassword + "@" + server_ + "/?vm=" + vmId;
+    std::vector<char> vmxSpecCopy(vmxSpec.begin(), vmxSpec.end());
+    vmxSpecCopy.push_back('\0');
+
+    connectParams.vmxSpec = vmxSpecCopy.data();
     connectParams.serverName = hostCopy.data();
     connectParams.credType = VIXDISKLIB_CRED_UID;
     connectParams.creds.uid.userName = usernameCopy.data();
@@ -247,32 +269,6 @@ bool VMwareConnection::getChangedBlocks(const std::string& vmId, const std::stri
         }
     }
     return false;
-}
-
-bool VMwareConnection::initialize() {
-    // Initialize VDDK
-    VixError vixError = VixDiskLib_InitWrapper(VIXDISKLIB_VERSION_MAJOR,
-                                             VIXDISKLIB_VERSION_MINOR,
-                                             nullptr);
-    if (vixError != VIX_OK) {
-        char* errorMsg = VixDiskLib_GetErrorTextWrapper(vixError, nullptr, 0);
-        if (errorMsg) {
-            lastError_ = errorMsg;
-            VixDiskLib_FreeErrorTextWrapper(errorMsg);
-        }
-        return false;
-    }
-    initialized_ = true;
-    return true;
-}
-
-void VMwareConnection::cleanupVDDK() {
-    if (vddkConnection_) {
-        VixDiskLib_DisconnectWrapper(&vddkConnection_);
-        vddkConnection_ = nullptr;
-    }
-    VixDiskLib_ExitWrapper();
-    initialized_ = false;
 }
 
 VDDKConnection VMwareConnection::getVDDKConnection() const {

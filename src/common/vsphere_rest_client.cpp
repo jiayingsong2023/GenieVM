@@ -1,4 +1,5 @@
 #include "common/vsphere_rest_client.hpp"
+#include "common/utils.hpp"
 #include "common/logger.hpp"
 #include <curl/curl.h>
 #include <stdexcept>
