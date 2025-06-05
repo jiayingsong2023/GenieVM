@@ -121,12 +121,13 @@ bool VMwareConnection::vddkInitialize(const std::string& vmId) {
     std::vector<char> passwordCopy(password_.begin(), password_.end());
     passwordCopy.push_back('\0');
 
-    // For vCenter, we need to use the correct format for vmxSpec with URL encoded credentials
-    std::string encodedUsername = utils::urlEncode(username_);
-    std::string encodedPassword = utils::urlEncode(password_);
-    std::string vmxSpec = "vi://" + encodedUsername + ":" + encodedPassword + "@" + server_ + "/?vm=" + vmId;
+    // For vCenter, we need to use the correct format for vmxSpec
+    // Format: vi://username:password@host/?vm=vmId
+    std::string vmxSpec = "vi://" + username_ + ":" + password_ + "@" + server_ + "/?vm=" + vmId;
     std::vector<char> vmxSpecCopy(vmxSpec.begin(), vmxSpec.end());
     vmxSpecCopy.push_back('\0');
+
+    Logger::debug("Constructed vmxSpec: " + vmxSpec);
 
     connectParams.vmxSpec = vmxSpecCopy.data();
     connectParams.serverName = hostCopy.data();
@@ -134,14 +135,21 @@ bool VMwareConnection::vddkInitialize(const std::string& vmId) {
     connectParams.creds.uid.userName = usernameCopy.data();
     connectParams.creds.uid.password = passwordCopy.data();
 
+    Logger::debug("VDDK connection parameters - vmxSpec: " + std::string(connectParams.vmxSpec) + 
+                 ", serverName: " + std::string(connectParams.serverName) + 
+                 ", credType: " + std::to_string(connectParams.credType));
+
     VixError error = VixDiskLib_ConnectWrapper(&connectParams, &vddkConnection_);
     if (error != VIX_OK) {
-        lastError_ = "Failed to create VDDK connection: " + getVixErrorText(error);
-        Logger::error(lastError_);
+        char* errorMsg = VixDiskLib_GetErrorTextWrapper(error, nullptr, 0);
+        if (errorMsg) {
+            lastError_ = errorMsg;
+            VixDiskLib_FreeErrorTextWrapper(errorMsg);
+        }
+        Logger::error("Failed to connect to VDDK: " + lastError_);
         return false;
     }
 
-    Logger::info("Successfully created VDDK connection");
     return true;
 }
 

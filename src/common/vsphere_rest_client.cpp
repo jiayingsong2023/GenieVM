@@ -326,8 +326,8 @@ bool VSphereRestClient::makeRequestWithRetry(const std::string& method, const st
     return false;
 }
 
-bool VSphereRestClient::makeRequest(const std::string& method, const std::string& endpoint, 
-                                  const nlohmann::json& data, nlohmann::json& response) {
+bool VSphereRestClient::makeRequest(const std::string& method, const std::string& endpoint,
+                                  const nlohmann::json& requestBody, nlohmann::json& response) {
     if (!curl_) {
         Logger::error("CURL not initialized");
         return false;
@@ -335,8 +335,8 @@ bool VSphereRestClient::makeRequest(const std::string& method, const std::string
 
     std::string url = "https://" + host_ + endpoint;
     Logger::debug("Making " + method + " request to: " + url);
-    if (!data.empty()) {
-        Logger::debug("Request body: " + data.dump());
+    if (!requestBody.empty()) {
+        Logger::debug("Request body: " + requestBody.dump());
     }
 
     struct curl_slist* headers = nullptr;
@@ -371,8 +371,8 @@ bool VSphereRestClient::makeRequest(const std::string& method, const std::string
         if (!sessionId_.empty()) {
             fprintf(verbose, "  vmware-api-session-id: %s\n", sessionId_.c_str());
         }
-        if (!data.empty()) {
-            fprintf(verbose, "Body: %s\n", data.dump().c_str());
+        if (!requestBody.empty()) {
+            fprintf(verbose, "Body: %s\n", requestBody.dump().c_str());
         }
         curl_easy_setopt(curl_, CURLOPT_STDERR, verbose);
     }
@@ -382,7 +382,7 @@ bool VSphereRestClient::makeRequest(const std::string& method, const std::string
     curl_easy_setopt(curl_, CURLOPT_WRITEDATA, &responseData);
 
     if (method == "POST" || method == "PUT") {
-        std::string jsonData = data.dump();
+        std::string jsonData = requestBody.dump();
         curl_easy_setopt(curl_, CURLOPT_POSTFIELDS, jsonData.c_str());
         curl_easy_setopt(curl_, CURLOPT_CUSTOMREQUEST, method.c_str());
     } else if (method == "DELETE") {
@@ -414,7 +414,7 @@ bool VSphereRestClient::makeRequest(const std::string& method, const std::string
         if (refreshSession()) {
             // Retry the request with the new session
             curl_slist_free_all(headers);
-            return makeRequest(method, endpoint, data, response);
+            return makeRequest(method, endpoint, requestBody, response);
         } else {
             Logger::error("Failed to refresh session");
             curl_slist_free_all(headers);
@@ -554,19 +554,66 @@ bool VSphereRestClient::getVMDiskInfo(const std::string& vmId, const std::string
 }
 
 bool VSphereRestClient::enableCBT(const std::string& vmId) {
-    nlohmann::json data = {
-        {"enabled", true}
-    };
-    nlohmann::json response;
-    return makeRequest("PATCH", "/rest/vcenter/vm/" + vmId + "/hardware/disk/change-tracking", data, response);
+    Logger::info("Enabling CBT for VM: " + vmId);
+    try {
+        std::string endpoint = "/rest/vcenter/vm/" + vmId + "/config";
+        nlohmann::json requestBody = {
+            {"changed_block_tracking_enabled", true}
+        };
+        
+        nlohmann::json response;
+        bool success = makeRequest("PATCH", endpoint, requestBody, response);
+        if (success) {
+            Logger::info("Successfully enabled CBT for VM: " + vmId);
+        } else {
+            Logger::error("Failed to enable CBT for VM: " + vmId);
+        }
+        return success;
+    } catch (const std::exception& e) {
+        Logger::error("Exception while enabling CBT: " + std::string(e.what()));
+        return false;
+    }
 }
 
 bool VSphereRestClient::disableCBT(const std::string& vmId) {
-    nlohmann::json data = {
-        {"enabled", false}
-    };
-    nlohmann::json response;
-    return makeRequest("PATCH", "/rest/vcenter/vm/" + vmId + "/hardware/disk/change-tracking", data, response);
+    Logger::info("Disabling CBT for VM: " + vmId);
+    try {
+        std::string endpoint = "/rest/vcenter/vm/" + vmId + "/config";
+        nlohmann::json requestBody = {
+            {"changed_block_tracking_enabled", false}
+        };
+        
+        nlohmann::json response;
+        bool success = makeRequest("PATCH", endpoint, requestBody, response);
+        if (success) {
+            Logger::info("Successfully disabled CBT for VM: " + vmId);
+        } else {
+            Logger::error("Failed to disable CBT for VM: " + vmId);
+        }
+        return success;
+    } catch (const std::exception& e) {
+        Logger::error("Exception while disabling CBT: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool VSphereRestClient::isCBTEnabled(const std::string& vmId) {
+    Logger::info("Checking CBT status for VM: " + vmId);
+    try {
+        std::string endpoint = "/rest/vcenter/vm/" + vmId + "/config";
+        nlohmann::json response;
+        bool success = makeRequest("GET", endpoint, nlohmann::json(), response);
+        if (success && response.contains("changed_block_tracking_enabled")) {
+            bool enabled = response["changed_block_tracking_enabled"];
+            Logger::info("CBT status for VM " + vmId + ": " + (enabled ? "enabled" : "disabled"));
+            return enabled;
+        }
+        Logger::error("Failed to get CBT status for VM: " + vmId);
+        return false;
+    } catch (const std::exception& e) {
+        Logger::error("Exception while checking CBT status: " + std::string(e.what()));
+        return false;
+    }
 }
 
 bool VSphereRestClient::getVMPowerState(const std::string& vmId, std::string& powerState) {
