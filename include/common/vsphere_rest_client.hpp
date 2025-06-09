@@ -24,7 +24,7 @@ public:
     // Authentication
     bool login();
     bool logout();
-    bool isLoggedIn() const;
+    bool isLoggedIn() const { return isLoggedIn_; }
     std::string getLastError() const;
     bool refreshSession();
 
@@ -37,6 +37,7 @@ public:
     bool getVMDiskInfo(const std::string& vmId, const std::string& diskPath, nlohmann::json& diskInfo);
     bool enableCBT(const std::string& vmId);
     bool disableCBT(const std::string& vmId);
+    bool isCBTEnabled(const std::string& vmId);
     bool getVMPowerState(const std::string& vmId, std::string& powerState);
     bool powerOnVM(const std::string& vmId);
     bool powerOffVM(const std::string& vmId);
@@ -95,8 +96,8 @@ public:
 
 private:
     // Helper methods
-    bool makeRequest(const std::string& method, const std::string& endpoint, 
-                    const nlohmann::json& data, nlohmann::json& response);
+    bool makeRequest(const std::string& method, const std::string& endpoint,
+                    const nlohmann::json& requestBody, nlohmann::json& response);
     bool makeRequestWithRetry(const std::string& method, const std::string& endpoint, 
                             const nlohmann::json& data, nlohmann::json& response,
                             int maxRetries = 3);

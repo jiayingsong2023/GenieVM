@@ -1,68 +1,60 @@
 #pragma once
 
-#include <memory>
-#include <string>
-#include <functional>
+#include "common/job.hpp"
 #include "backup/backup_provider.hpp"
 #include "backup/vm_config.hpp"
+#include "common/parallel_task_manager.hpp"
+#include "common/logger.hpp"
+#include <memory>
+#include <string>
 #include <vector>
-#include <thread>
+#include <functional>
 #include <mutex>
-#include <atomic>
 
-// Forward declarations
-class BackupProvider;
-
-// Callback type definitions
-using ProgressCallback = std::function<void(int progress)>;
-using StatusCallback = std::function<void(const std::string& status)>;
-
-class BackupJob {
+class BackupJob : public Job {
 public:
-    enum class Status {
-        PENDING,
-        RUNNING,
-        COMPLETED,
-        FAILED,
-        CANCELLED
-    };
+    BackupJob(BackupProvider* provider,
+             std::shared_ptr<ParallelTaskManager> taskManager,
+             const BackupConfig& config);
+    ~BackupJob() override;
 
-    BackupJob(std::shared_ptr<BackupProvider> provider, const BackupConfig& config);
-    ~BackupJob();
+    // Job interface implementation
+    bool start() override;
+    bool pause() override;
+    bool resume() override;
+    bool cancel() override;
+    bool isRunning() const override;
+    bool isPaused() const override;
+    bool isCompleted() const override;
+    bool isFailed() const override;
+    bool isCancelled() const override;
+    int getProgress() const override;
+    std::string getStatus() const override;
+    std::string getError() const override;
+    std::string getId() const override;
 
-    // Job control
-    void start();
-    void cancel();
-    void verifyBackup();
+    // Backup-specific methods
+    bool verifyBackup();
+    bool cleanupOldBackups();
+    bool getChangedBlocks(std::vector<std::pair<uint64_t, uint64_t>>& changedBlocks);
 
-    // Job status
-    std::string getId() const;
-    Status getStatus() const;
-    double getProgress() const;
-    std::string getErrorMessage() const;
-
-    // Callbacks
-    void setProgressCallback(std::function<void(int)> callback);
-    void setStatusCallback(std::function<void(const std::string&)> callback);
+    // Configuration
+    BackupConfig getConfig() const { return config_; }
+    void setConfig(const BackupConfig& config) { config_ = config; }
 
 private:
-    std::shared_ptr<BackupProvider> provider_;
-    BackupConfig config_;
-    std::string id_;
-    Status status_;
-    double progress_;
-    std::string errorMessage_;
-    std::atomic<bool> running_;
-    std::atomic<bool> paused_;
-    std::thread worker_;
-    mutable std::mutex mutex_;
-    std::function<void(int)> progressCallback_;
-    std::function<void(const std::string&)> statusCallback_;
+    void executeBackup();
+    void handleBackupProgress(int progress);
+    void handleBackupStatus(const std::string& status);
+    void handleBackupError(const std::string& error);
+    bool validateBackupConfig() const;
+    bool createBackupDirectory() const;
+    bool writeBackupMetadata() const;
+    bool readBackupMetadata() const;
+    bool cleanupBackupDirectory() const;
 
-    // Helper methods
-    void workerFunction();
-    void updateStatus(const std::string& status);
-    void updateProgress(double progress);
-    void setError(const std::string& error);
-    std::string generateId() const;
+    BackupProvider* provider_;  // Not owned by BackupJob
+    std::shared_ptr<ParallelTaskManager> taskManager_;
+    BackupConfig config_;
+    mutable std::mutex mutex_;
 }; 

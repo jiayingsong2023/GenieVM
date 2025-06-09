@@ -1,139 +1,241 @@
-#include "vddk_wrapper/vddk_wrapper.h"
-#include <vixDiskLib.h>
+#include <dlfcn.h>
 #include <string>
 #include <memory>
-#include <dlfcn.h>
-#include <cstdlib>
+#include <vector>
+#include <stdexcept>
+#include <iostream>
+#include <cstring>  // Add for strchr
+#include <vixDiskLib.h>
+#include "vddk_wrapper/vddk_wrapper.h"
+#include "common/logger.hpp"  // Add Logger header
 
-// Define VDDK types if not already defined
-typedef void (*VixDiskLibLogFunc)(const char *fmt, ...);
-typedef void (*VixDiskLibWarnFunc)(const char *fmt, ...);
-typedef void (*VixDiskLibPanicFunc)(const char *fmt, ...);
+// Define progress function type since it's not in vixDiskLib.h
+typedef void (*VixDiskLibGenericProgressFunc)(void* data, int percent);
 
 // Function pointers for VDDK functions
-static void* vddk_handle = nullptr;
-static VixError (*VixDiskLib_Init_impl)(uint32_t, uint32_t, VixDiskLibLogFunc*, VixDiskLibWarnFunc*, VixDiskLibPanicFunc*, const char*) = nullptr;
-static VixError (*VixDiskLib_Connect_impl)(const VixDiskLibConnectParams*, VixDiskLibConnection*) = nullptr;
-static VixError (*VixDiskLib_Open_impl)(VixDiskLibConnection, const char*, uint32, VixDiskLibHandle*) = nullptr;
-static VixError (*VixDiskLib_Read_impl)(VixDiskLibHandle, VixDiskLibSectorType, VixDiskLibSectorType, uint8*) = nullptr;
-static VixError (*VixDiskLib_Write_impl)(VixDiskLibHandle, VixDiskLibSectorType, VixDiskLibSectorType, const uint8*) = nullptr;
-static VixError (*VixDiskLib_Close_impl)(VixDiskLibHandle*) = nullptr;
-static VixError (*VixDiskLib_Disconnect_impl)(VixDiskLibConnection*) = nullptr;
-static void (*VixDiskLib_Exit_impl)() = nullptr;
+static VixError (*pfn_VixDiskLib_Init)(uint32_t majorVersion, uint32_t minorVersion, 
+                                      VixDiskLibGenericLogFunc* log, 
+                                      VixDiskLibGenericLogFunc* warn, 
+                                      VixDiskLibGenericLogFunc* panic, 
+                                      const char* libDir) = nullptr;
+static void (*pfn_VixDiskLib_Exit)(void) = nullptr;
+static VixError (*pfn_VixDiskLib_Connect)(const VixDiskLibConnectParams* connectParams, VixDiskLibConnection* connection) = nullptr;
+static VixError (*pfn_VixDiskLib_Disconnect)(VixDiskLibConnection connection) = nullptr;
+static VixError (*pfn_VixDiskLib_Open)(const VixDiskLibConnection connection, const char* path, uint32_t flags, VixDiskLibHandle* handle) = nullptr;
+static VixError (*pfn_VixDiskLib_Close)(VixDiskLibHandle handle) = nullptr;
+static VixError (*pfn_VixDiskLib_GetInfo)(VixDiskLibHandle handle, VixDiskLibInfo** info) = nullptr;
+static VixError (*pfn_VixDiskLib_FreeInfo)(VixDiskLibInfo* info) = nullptr;
+static VixError (*pfn_VixDiskLib_Create)(const VixDiskLibConnection connection, const char* path, const VixDiskLibCreateParams* createParams, VixDiskLibProgressFunc progressFunc, void* progressCallbackData) = nullptr;
+static VixError (*pfn_VixDiskLib_Clone)(const VixDiskLibConnection connection, const char* path, const VixDiskLibConnection srcConnection, const char* srcPath, const VixDiskLibCreateParams* createParams, VixDiskLibProgressFunc progressFunc, void* progressCallbackData, bool doInflate) = nullptr;
+static VixError (*pfn_VixDiskLib_Read)(VixDiskLibHandle handle, VixDiskLibSectorType startSector, VixDiskLibSectorType numSectors, uint8_t* buffer) = nullptr;
+static VixError (*pfn_VixDiskLib_Write)(VixDiskLibHandle handle, VixDiskLibSectorType startSector, VixDiskLibSectorType numSectors, const uint8_t* buffer) = nullptr;
+static VixError (*pfn_VixDiskLib_QueryAllocatedBlocks)(VixDiskLibHandle handle, VixDiskLibSectorType startSector, VixDiskLibSectorType numSectors, VixDiskLibSectorType chunkSize, VixDiskLibBlockList** blockList) = nullptr;
+static void (*pfn_VixDiskLib_FreeBlockList)(VixDiskLibBlockList* blockList) = nullptr;
+static char* (*pfn_VixDiskLib_GetErrorText)(VixError error, const char* locale) = nullptr;
+static void (*pfn_VixDiskLib_FreeErrorText)(char* errorText) = nullptr;
 
-// Load VDDK library and its functions
-static bool load_vddk_library(const char* lib_dir) {
-    if (vddk_handle) {
-        return true;  // Already loaded
+// Macro to load a function from the VDDK library
+#define LOAD_FUNCTION(name) \
+    pfn_##name = reinterpret_cast<decltype(pfn_##name)>(dlsym(vddkHandle, #name)); \
+    if (!pfn_##name) { \
+        Logger::error("Failed to load function " #name ": " + std::string(dlerror())); \
+        dlclose(vddkHandle); \
+        return false; \
+    } \
+    Logger::debug("Successfully loaded function: " #name)
+
+// Load VDDK library
+static bool loadVDDKLibrary() {
+    static void* vddkHandle = nullptr;
+    static bool loaded = false;
+
+    if (loaded) {
+        Logger::debug("VDDK library already loaded");
+        return true;
     }
 
-    // Set LD_LIBRARY_PATH to include system libraries first, then VDDK's lib directory
-    std::string ld_library_path = "LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/lib64:/usr/lib";
-    if (const char* existing_path = std::getenv("LD_LIBRARY_PATH")) {
-        ld_library_path += ":";
-        ld_library_path += existing_path;
-    }
-    ld_library_path += ":";
-    ld_library_path += lib_dir;
-    putenv(const_cast<char*>(ld_library_path.c_str()));
-
-    // Load system libcurl first with full path
-    void* curl_handle = dlopen("/usr/lib/x86_64-linux-gnu/libcurl.so.4", RTLD_NOW | RTLD_GLOBAL);
-    if (!curl_handle) {
+    // Try to load VDDK library
+    Logger::debug("Attempting to load libvixDiskLib.so...");
+    vddkHandle = dlopen("libvixDiskLib.so", RTLD_NOW | RTLD_DEEPBIND);
+    if (!vddkHandle) {
+        Logger::error("Failed to load VDDK library: " + std::string(dlerror()));
         return false;
     }
-
-    // Load VDDK library with full path
-    std::string lib_path = std::string(lib_dir) + "/libvixDiskLib.so";
-    vddk_handle = dlopen(lib_path.c_str(), RTLD_NOW | RTLD_LOCAL);
-    if (!vddk_handle) {
-        dlclose(curl_handle);
-        return false;
-    }
+    Logger::debug("Successfully loaded libvixDiskLib.so");
 
     // Load function pointers
-    VixDiskLib_Init_impl = (VixError (*)(uint32_t, uint32_t, VixDiskLibLogFunc*, VixDiskLibWarnFunc*, VixDiskLibPanicFunc*, const char*))dlsym(vddk_handle, "VixDiskLib_Init");
-    VixDiskLib_Connect_impl = (VixError (*)(const VixDiskLibConnectParams*, VixDiskLibConnection*))dlsym(vddk_handle, "VixDiskLib_Connect");
-    VixDiskLib_Open_impl = (VixError (*)(VixDiskLibConnection, const char*, uint32, VixDiskLibHandle*))dlsym(vddk_handle, "VixDiskLib_Open");
-    VixDiskLib_Read_impl = (VixError (*)(VixDiskLibHandle, VixDiskLibSectorType, VixDiskLibSectorType, uint8*))dlsym(vddk_handle, "VixDiskLib_Read");
-    VixDiskLib_Write_impl = (VixError (*)(VixDiskLibHandle, VixDiskLibSectorType, VixDiskLibSectorType, const uint8*))dlsym(vddk_handle, "VixDiskLib_Write");
-    VixDiskLib_Close_impl = (VixError (*)(VixDiskLibHandle*))dlsym(vddk_handle, "VixDiskLib_Close");
-    VixDiskLib_Disconnect_impl = (VixError (*)(VixDiskLibConnection*))dlsym(vddk_handle, "VixDiskLib_Disconnect");
-    VixDiskLib_Exit_impl = (void (*)())dlsym(vddk_handle, "VixDiskLib_Exit");
+    LOAD_FUNCTION(VixDiskLib_Init);
+    LOAD_FUNCTION(VixDiskLib_Exit);
+    LOAD_FUNCTION(VixDiskLib_Connect);
+    LOAD_FUNCTION(VixDiskLib_Disconnect);
+    LOAD_FUNCTION(VixDiskLib_Open);
+    LOAD_FUNCTION(VixDiskLib_Close);
+    LOAD_FUNCTION(VixDiskLib_GetInfo);
+    LOAD_FUNCTION(VixDiskLib_FreeInfo);
+    LOAD_FUNCTION(VixDiskLib_Create);
+    LOAD_FUNCTION(VixDiskLib_Clone);
+    LOAD_FUNCTION(VixDiskLib_Read);
+    LOAD_FUNCTION(VixDiskLib_Write);
+    LOAD_FUNCTION(VixDiskLib_QueryAllocatedBlocks);
+    LOAD_FUNCTION(VixDiskLib_FreeBlockList);
+    LOAD_FUNCTION(VixDiskLib_GetErrorText);
+    LOAD_FUNCTION(VixDiskLib_FreeErrorText);
 
-    return VixDiskLib_Init_impl && VixDiskLib_Connect_impl && VixDiskLib_Open_impl &&
-           VixDiskLib_Read_impl && VixDiskLib_Write_impl && VixDiskLib_Close_impl &&
-           VixDiskLib_Disconnect_impl && VixDiskLib_Exit_impl;
+    loaded = true;
+    Logger::debug("All VDDK functions loaded successfully");
+    return true;
 }
 
-extern "C" {
+// Helper function to get error text
+std::string getVixErrorText(VixError error) {
+    char* errorText = nullptr;
+    if (pfn_VixDiskLib_GetErrorText) {
+        errorText = pfn_VixDiskLib_GetErrorText(error, nullptr);
+    }
+    std::string result(errorText ? errorText : "Unknown error");
+    if (errorText && pfn_VixDiskLib_FreeErrorText) {
+        pfn_VixDiskLib_FreeErrorText(errorText);
+    }
+    return result;
+}
 
-// Wrapper functions that use C++11 internally but expose C-style interface
-VixError VixDiskLib_InitWrapper(uint32_t majorVersion,
-                               uint32_t minorVersion,
-                               VixDiskLibConnectParams *connectParams,
-                               const char *libDir,
-                               const char *configFile) {
-    if (!load_vddk_library(libDir)) {
+// Helper function to log VDDK errors
+void logVixError(const std::string& operation, VixError error) {
+    std::cerr << "Error: " << operation << " failed: " << getVixErrorText(error) << std::endl;
+}
+
+// Initialize VDDK
+VixError VixDiskLib_InitWrapper(uint32_t majorVersion, uint32_t minorVersion, void* unused) {
+    Logger::debug("Starting VixDiskLib_InitWrapper...");
+    Logger::debug("Major version: " + std::to_string(majorVersion));
+    Logger::debug("Minor version: " + std::to_string(minorVersion));
+    
+    
+    Logger::debug("Calling VixDiskLib_Init directly...");
+    try {
+        //VixError error = VixDiskLib_Init(majorVersion, minorVersion, 
+        //                               nullptr,  // log callback
+        //                               nullptr,  // warning callback
+        //                               nullptr,  // panic callback
+        //
+        VixError error = VixDiskLib_InitEx(6, 8, 
+                                        nullptr,  // log callback
+                                        nullptr,  // warning callback
+                                        nullptr,  // panic callback
+                                        "/usr/local/vddk/lib64",
+                                        nullptr);  // libDir
+        if (error != VIX_OK) {
+            Logger::error("VixDiskLib_Init failed with error: " + std::to_string(error));
+            char* errorMsg = VixDiskLib_GetErrorText(error, nullptr);
+            if (errorMsg) {
+                Logger::error("Error details: " + std::string(errorMsg));
+                VixDiskLib_FreeErrorText(errorMsg);
+            }
+        } else {
+            Logger::debug("VixDiskLib_Init completed successfully");
+        }
+        return error;
+    } catch (const std::exception& e) {
+        Logger::error("Exception during VixDiskLib_Init: " + std::string(e.what()));
+        return VIX_E_FAIL;
+    } catch (...) {
+        Logger::error("Unknown exception during VixDiskLib_Init");
         return VIX_E_FAIL;
     }
-    return VixDiskLib_Init_impl(majorVersion, minorVersion, 
-                               nullptr,  // log function
-                               nullptr,  // warn function
-                               nullptr,  // panic function
-                               libDir);
 }
 
-VixError VixDiskLib_ConnectWrapper(const VixDiskLibConnectParams *connectParams,
-                                  VixDiskLibConnection *connection) {
-    return VixDiskLib_Connect_impl(connectParams, connection);
-}
-
-VixError VixDiskLib_OpenWrapper(const VixDiskLibConnection connection,
-                               const char *path,
-                               uint32 flags,
-                               VixDiskLibHandle *diskHandle) {
-    return VixDiskLib_Open_impl(connection, path, flags, diskHandle);
-}
-
-VixError VixDiskLib_ReadWrapper(VixDiskLibHandle diskHandle,
-                               VixDiskLibSectorType startSector,
-                               VixDiskLibSectorType numSectors,
-                               uint8 *readBuffer) {
-    return VixDiskLib_Read_impl(diskHandle, startSector, numSectors, readBuffer);
-}
-
-VixError VixDiskLib_WriteWrapper(VixDiskLibHandle diskHandle,
-                                VixDiskLibSectorType startSector,
-                                VixDiskLibSectorType numSectors,
-                                const uint8 *writeBuffer) {
-    return VixDiskLib_Write_impl(diskHandle, startSector, numSectors, writeBuffer);
-}
-
-VixError VixDiskLib_CloseWrapper(VixDiskLibHandle *diskHandle) {
-    VixError err = VixDiskLib_Close_impl(diskHandle);
-    if (err == VIX_OK) {
-        *diskHandle = nullptr;
-    }
-    return err;
-}
-
-VixError VixDiskLib_DisconnectWrapper(VixDiskLibConnection *connection) {
-    VixError err = VixDiskLib_Disconnect_impl(connection);
-    if (err == VIX_OK) {
-        *connection = nullptr;
-    }
-    return err;
-}
-
+// Exit VDDK
 void VixDiskLib_ExitWrapper() {
-    if (VixDiskLib_Exit_impl) {
-        VixDiskLib_Exit_impl();
-    }
-    if (vddk_handle) {
-        dlclose(vddk_handle);
-        vddk_handle = nullptr;
-    }
+    VixDiskLib_Exit();
 }
 
-} // extern "C" 
+// Connect to vCenter
+VixError VixDiskLib_ConnectWrapper(const VixDiskLibConnectParams* connectParams, VDDKConnection* connection) {
+    return VixDiskLib_Connect(connectParams, connection);
+}
+
+// Disconnect from vCenter
+VixError VixDiskLib_DisconnectWrapper(VDDKConnection* connection) {
+    return VixDiskLib_Disconnect(*connection);
+}
+
+// Open a disk
+VixError VixDiskLib_OpenWrapper(const VDDKConnection connection, const char* path, uint32_t flags, VDDKHandle* handle) {
+    return VixDiskLib_Open(connection, path, flags, handle);
+}
+
+// Close a disk
+VixError VixDiskLib_CloseWrapper(VDDKHandle* handle) {
+    return VixDiskLib_Close(*handle);
+}
+
+// Get disk info
+VixError VixDiskLib_GetInfoWrapper(VDDKHandle handle, VDDKInfo** info) {
+    return VixDiskLib_GetInfo(handle, info);
+}
+
+// Free disk info
+VixError VixDiskLib_FreeInfoWrapper(VDDKInfo* info) {
+    VixDiskLib_FreeInfo(info);
+    return VIX_OK;
+}
+
+// Create a disk
+VixError VixDiskLib_CreateWrapper(const VDDKConnection connection, 
+                                 const char* path, 
+                                 const VDDKCreateParams* createParams, 
+                                 VixDiskLibProgressFunc progressFunc, 
+                                 void* progressCallbackData) {
+    return VixDiskLib_Create(connection, path, createParams, progressFunc, progressCallbackData);
+}
+
+// Clone a disk
+VixError VixDiskLib_CloneWrapper(const VDDKConnection connection, 
+                                const char* path, 
+                                const VDDKConnection srcConnection, 
+                                const char* srcPath, 
+                                const VDDKCreateParams* createParams, 
+                                VixDiskLibProgressFunc progressFunc, 
+                                void* progressCallbackData, 
+                                bool doInflate) {
+    return VixDiskLib_Clone(connection, path, srcConnection, srcPath, createParams, progressFunc, progressCallbackData, doInflate);
+}
+
+// Read from a disk
+VixError VixDiskLib_ReadWrapper(VDDKHandle handle, 
+                               VixDiskLibSectorType startSector, 
+                               VixDiskLibSectorType numSectors, 
+                               uint8_t* buffer) {
+    return VixDiskLib_Read(handle, startSector, numSectors, buffer);
+}
+
+// Write to a disk
+VixError VixDiskLib_WriteWrapper(VDDKHandle handle, 
+                                VixDiskLibSectorType startSector, 
+                                VixDiskLibSectorType numSectors, 
+                                const uint8_t* buffer) {
+    return VixDiskLib_Write(handle, startSector, numSectors, buffer);
+}
+
+// Query allocated blocks
+VixError VixDiskLib_QueryAllocatedBlocksWrapper(VDDKHandle handle, 
+                                               VixDiskLibSectorType startSector, 
+                                               VixDiskLibSectorType numSectors, 
+                                               VDDKBlockList** blockList) {
+    return VixDiskLib_QueryAllocatedBlocks(handle, startSector, numSectors, 0, blockList);
+}
+
+// Free block list
+void VixDiskLib_FreeBlockListWrapper(VDDKBlockList* blockList) {
+    VixDiskLib_FreeBlockList(blockList);
+}
+
+// Get error text
+char* VixDiskLib_GetErrorTextWrapper(VixError error, char* buffer, size_t bufferSize) {
+    return VixDiskLib_GetErrorText(error, nullptr);
+}
+
+// Free error text
+void VixDiskLib_FreeErrorTextWrapper(char* errorText) {
+    VixDiskLib_FreeErrorText(errorText);
+} 

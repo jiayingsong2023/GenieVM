@@ -1,4 +1,5 @@
 #include "common/vsphere_rest_client.hpp"
+#include "common/utils.hpp"
 #include "common/logger.hpp"
 #include <curl/curl.h>
 #include <stdexcept>
@@ -44,104 +45,6 @@ STSChallenge parseSTSChallenge(const std::string& challenge) {
     }
 
     return result;
-}
-
-// Local write callback for getSTSToken
-static size_t localWriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
-    size_t realsize = size * nmemb;
-    userp->append((char*)contents, realsize);
-    return realsize;
-}
-
-// Helper function to get STS token
-std::string getSTSToken(const std::string& stsUrl, const std::string& username, const std::string& password) {
-    Logger::debug("Getting STS token from: " + stsUrl);
-    Logger::debug("Username length: " + std::to_string(username.length()));
-    Logger::debug("Password length: " + std::to_string(password.length()));
-    
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        Logger::error("Failed to initialize CURL for STS token request");
-        return "";
-    }
-
-    std::string responseData;
-    struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "Content-Type: application/x-www-form-urlencoded");
-    headers = curl_slist_append(headers, "Accept: application/json");
-
-    // Build post data with encoded credentials
-    std::string postData = "grant_type=password&username=" + username + 
-                          "&password=" + password;
-
-    Logger::debug("Post data: " + postData);
-    Logger::debug("Post data length: " + std::to_string(postData.length()));
-
-    curl_easy_setopt(curl, CURLOPT_URL, stsUrl.c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, postData.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, localWriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseData);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-
-    // Add verbose logging for CURL
-    curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-    FILE* verbose = fopen("/tmp/curl_verbose.log", "a");
-    if (verbose) {
-        fprintf(verbose, "\n=== STS Token Request ===\n");
-        fprintf(verbose, "URL: %s\n", stsUrl.c_str());
-        fprintf(verbose, "Headers:\n");
-        fprintf(verbose, "  Content-Type: application/x-www-form-urlencoded\n");
-        fprintf(verbose, "  Accept: application/json\n");
-        fprintf(verbose, "Post Data: %s\n", postData.c_str());
-        curl_easy_setopt(curl, CURLOPT_STDERR, verbose);
-    }
-
-    CURLcode res = curl_easy_perform(curl);
-    long httpCode = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
-
-    if (verbose) {
-        fprintf(verbose, "\nSTS Token Response Code: %ld\n", httpCode);
-        fprintf(verbose, "STS Token Response: %s\n", responseData.c_str());
-        fclose(verbose);
-    }
-
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) {
-        Logger::error("Failed to get STS token: " + std::string(curl_easy_strerror(res)));
-        return "";
-    }
-
-    if (httpCode != 200) {
-        Logger::error("STS token request failed with HTTP code: " + std::to_string(httpCode));
-        Logger::debug("STS response: " + responseData);
-        Logger::debug("STS URL: " + stsUrl);
-        Logger::debug("Request headers:");
-        Logger::debug("  Content-Type: application/x-www-form-urlencoded");
-        Logger::debug("  Accept: application/json");
-        return "";
-    }
-
-    try {
-        nlohmann::json response = nlohmann::json::parse(responseData);
-        if (response.contains("access_token")) {
-            std::string token = response["access_token"].get<std::string>();
-            Logger::debug("Successfully obtained STS token, length: " + std::to_string(token.length()));
-            return token;
-        } else {
-            Logger::error("STS response does not contain access_token");
-            Logger::debug("Full STS response: " + responseData);
-        }
-    } catch (const std::exception& e) {
-        Logger::error("Failed to parse STS token response: " + std::string(e.what()));
-        Logger::debug("Raw STS response: " + responseData);
-    }
-
-    return "";
 }
 
 // Helper function to analyze authentication errors
@@ -220,10 +123,7 @@ VSphereRestClient::VSphereRestClient(const std::string& host, const std::string&
 
 VSphereRestClient::~VSphereRestClient() {
     Logger::debug("Cleaning up VSphereRestClient");
-    if (isLoggedIn_ && !sessionId_.empty()) {
-        Logger::debug("Logging out before cleanup");
-        logout();
-    }
+    // Don't automatically logout - let the owner handle that
     if (curl_) {
         curl_easy_cleanup(curl_);
         Logger::debug("CURL handle cleaned up");
@@ -311,7 +211,7 @@ bool VSphereRestClient::login() {
         if (response.contains("value")) {
             sessionId_ = response["value"];
             isLoggedIn_ = true;
-            Logger::debug("Login successful!");
+            Logger::debug("Login successful! Session ID: " + sessionId_);
             if (verbose) {
                 fclose(verbose);
             }
@@ -319,9 +219,11 @@ bool VSphereRestClient::login() {
             return true;
         } else {
             Logger::debug("Response missing session value");
+            Logger::debug("Full response: " + responseData);
         }
     } catch (const nlohmann::json::parse_error& e) {
         Logger::debug("JSON parse error: " + std::string(e.what()));
+        Logger::debug("Raw response: " + responseData);
     }
     
     Logger::debug("Request failed with status code: " + std::to_string(httpCode));
@@ -424,8 +326,8 @@ bool VSphereRestClient::makeRequestWithRetry(const std::string& method, const st
     return false;
 }
 
-bool VSphereRestClient::makeRequest(const std::string& method, const std::string& endpoint, 
-                                  const nlohmann::json& data, nlohmann::json& response) {
+bool VSphereRestClient::makeRequest(const std::string& method, const std::string& endpoint,
+                                  const nlohmann::json& requestBody, nlohmann::json& response) {
     if (!curl_) {
         Logger::error("CURL not initialized");
         return false;
@@ -433,8 +335,8 @@ bool VSphereRestClient::makeRequest(const std::string& method, const std::string
 
     std::string url = "https://" + host_ + endpoint;
     Logger::debug("Making " + method + " request to: " + url);
-    if (!data.empty()) {
-        Logger::debug("Request body: " + data.dump());
+    if (!requestBody.empty()) {
+        Logger::debug("Request body: " + requestBody.dump());
     }
 
     struct curl_slist* headers = nullptr;
@@ -445,7 +347,9 @@ bool VSphereRestClient::makeRequest(const std::string& method, const std::string
     if (!sessionId_.empty()) {
         std::string sessionHeader = "vmware-api-session-id: " + sessionId_;
         headers = curl_slist_append(headers, sessionHeader.c_str());
-        Logger::debug("Added session ID to request");
+        Logger::debug("Added session ID to request: " + sessionId_);
+    } else {
+        Logger::warning("No session ID available for request");
     }
 
     curl_easy_setopt(curl_, CURLOPT_URL, url.c_str());
@@ -467,8 +371,8 @@ bool VSphereRestClient::makeRequest(const std::string& method, const std::string
         if (!sessionId_.empty()) {
             fprintf(verbose, "  vmware-api-session-id: %s\n", sessionId_.c_str());
         }
-        if (!data.empty()) {
-            fprintf(verbose, "Body: %s\n", data.dump().c_str());
+        if (!requestBody.empty()) {
+            fprintf(verbose, "Body: %s\n", requestBody.dump().c_str());
         }
         curl_easy_setopt(curl_, CURLOPT_STDERR, verbose);
     }
@@ -478,7 +382,7 @@ bool VSphereRestClient::makeRequest(const std::string& method, const std::string
     curl_easy_setopt(curl_, CURLOPT_WRITEDATA, &responseData);
 
     if (method == "POST" || method == "PUT") {
-        std::string jsonData = data.dump();
+        std::string jsonData = requestBody.dump();
         curl_easy_setopt(curl_, CURLOPT_POSTFIELDS, jsonData.c_str());
         curl_easy_setopt(curl_, CURLOPT_CUSTOMREQUEST, method.c_str());
     } else if (method == "DELETE") {
@@ -504,6 +408,20 @@ bool VSphereRestClient::makeRequest(const std::string& method, const std::string
     Logger::debug("Response code: " + std::to_string(httpCode));
     Logger::debug("Response body: " + responseData);
 
+    // Handle session expiration (401 Unauthorized)
+    if (httpCode == 401 && isLoggedIn_) {
+        Logger::debug("Session expired, attempting to refresh");
+        if (refreshSession()) {
+            // Retry the request with the new session
+            curl_slist_free_all(headers);
+            return makeRequest(method, endpoint, requestBody, response);
+        } else {
+            Logger::error("Failed to refresh session");
+            curl_slist_free_all(headers);
+            return false;
+        }
+    }
+
     if (httpCode >= 200 && httpCode < 300) {
         try {
             response = nlohmann::json::parse(responseData);
@@ -520,6 +438,9 @@ bool VSphereRestClient::makeRequest(const std::string& method, const std::string
         curl_slist_free_all(headers);
         return false;
     }
+
+    // This should never be reached, but added to satisfy the compiler
+    return false;
 }
 
 std::string VSphereRestClient::buildUrl(const std::string& endpoint) const {
@@ -547,19 +468,85 @@ void VSphereRestClient::handleError(const std::string& operation, const nlohmann
 }
 
 bool VSphereRestClient::getVMInfo(const std::string& vmId, nlohmann::json& vmInfo) {
-    return makeRequest("GET", "/rest/vcenter/vm/" + vmId, nlohmann::json(), vmInfo);
+    // Use filter.names in the URL query string
+    std::string endpoint = "/rest/vcenter/vm?filter.names=" + vmId;
+    nlohmann::json response;
+
+    // Explicitly set GET method and ensure it's not overridden
+    curl_easy_setopt(curl_, CURLOPT_HTTPGET, 1L);
+    curl_easy_setopt(curl_, CURLOPT_CUSTOMREQUEST, "GET");
+
+    bool success = makeRequest("GET", endpoint, nlohmann::json(), response);
+
+    // The response should contain the VM info directly
+    if (response.contains("value") && !response["value"].empty()) {
+        vmInfo = response["value"][0];  // Get the first (and should be only) VM
+        return true;
+    }
+
+    Logger::error("VM not found: " + vmId);
+    return false;
 }
 
-bool VSphereRestClient::getVMDiskPaths(const std::string& vmId, std::vector<std::string>& diskPaths) {
-    nlohmann::json response;
-    if (!makeRequest("GET", "/rest/vcenter/vm/" + vmId + "/hardware/disk", nlohmann::json(), response)) {
+bool VSphereRestClient::getVMDiskPaths(const std::string& vmName, std::vector<std::string>& diskPaths) {
+    Logger::info("Getting disk paths for VM: " + vmName);
+    
+    // Step 1: Get VM ID from VM name
+    nlohmann::json vmInfo;
+    if (!getVMInfo(vmName, vmInfo)) {
+        Logger::error("Failed to get VM ID for VM: " + vmName);
         return false;
     }
-    
-    for (const auto& disk : response["value"]) {
-        diskPaths.push_back(disk["value"].get<std::string>());
+    std::string vmId = vmInfo["vm"].get<std::string>();
+    Logger::debug("Got VM ID: " + vmId + " for VM: " + vmName);
+
+    // Step 2: Get disk numbers for the VM
+    nlohmann::json response;
+    if (!makeRequest("GET", "/rest/vcenter/vm/" + vmId + "/hardware/disk", nlohmann::json(), response)) {
+        Logger::error("Failed to get disk numbers for VM: " + vmId);
+        return false;
     }
-    return true;
+
+    // Parse disk numbers from response
+    try {
+        std::vector<std::string> diskNumbers;
+        for (const auto& disk : response["value"]) {
+            diskNumbers.push_back(disk["disk"].get<std::string>());
+        }
+        Logger::debug("Found " + std::to_string(diskNumbers.size()) + " disk(s)");
+
+        // Step 3: Get disk path for each disk number
+        for (const auto& diskNumber : diskNumbers) {
+            nlohmann::json diskResponse;
+            if (!makeRequest("GET", "/rest/vcenter/vm/" + vmId + "/hardware/disk/" + diskNumber, nlohmann::json(), diskResponse)) {
+                Logger::error("Failed to get disk path for disk " + diskNumber);
+                continue;
+            }
+
+            // Parse disk path from response
+            if (diskResponse["value"].contains("backing") && 
+                diskResponse["value"]["backing"].contains("vmdk_file")) {
+                std::string vmdkPath = diskResponse["value"]["backing"]["vmdk_file"].get<std::string>();
+                
+                // VDDK expects paths in the format: [datastore] path/to/vmdk
+                // Example: [ogilvie_local_datastore01] jackrh8vm/jackrh8vm.vmdk
+                // The path we get from the API is already in this format, so we can use it directly
+                Logger::debug("Found disk path: " + vmdkPath);
+                diskPaths.push_back(vmdkPath);
+            }
+        }
+
+        if (diskPaths.empty()) {
+            Logger::error("No valid disk paths found for VM: " + vmId);
+            return false;
+        }
+
+        Logger::info("Successfully retrieved " + std::to_string(diskPaths.size()) + " disk path(s)");
+        return true;
+    } catch (const std::exception& e) {
+        Logger::error("Failed to parse response: " + std::string(e.what()));
+        return false;
+    }
 }
 
 bool VSphereRestClient::getVMDiskInfo(const std::string& vmId, const std::string& diskPath, nlohmann::json& diskInfo) {
@@ -567,19 +554,66 @@ bool VSphereRestClient::getVMDiskInfo(const std::string& vmId, const std::string
 }
 
 bool VSphereRestClient::enableCBT(const std::string& vmId) {
-    nlohmann::json data = {
-        {"enabled", true}
-    };
-    nlohmann::json response;
-    return makeRequest("PATCH", "/rest/vcenter/vm/" + vmId + "/hardware/disk/change-tracking", data, response);
+    Logger::info("Enabling CBT for VM: " + vmId);
+    try {
+        std::string endpoint = "/rest/vcenter/vm/" + vmId + "/config";
+        nlohmann::json requestBody = {
+            {"changed_block_tracking_enabled", true}
+        };
+        
+        nlohmann::json response;
+        bool success = makeRequest("PATCH", endpoint, requestBody, response);
+        if (success) {
+            Logger::info("Successfully enabled CBT for VM: " + vmId);
+        } else {
+            Logger::error("Failed to enable CBT for VM: " + vmId);
+        }
+        return success;
+    } catch (const std::exception& e) {
+        Logger::error("Exception while enabling CBT: " + std::string(e.what()));
+        return false;
+    }
 }
 
 bool VSphereRestClient::disableCBT(const std::string& vmId) {
-    nlohmann::json data = {
-        {"enabled", false}
-    };
-    nlohmann::json response;
-    return makeRequest("PATCH", "/rest/vcenter/vm/" + vmId + "/hardware/disk/change-tracking", data, response);
+    Logger::info("Disabling CBT for VM: " + vmId);
+    try {
+        std::string endpoint = "/rest/vcenter/vm/" + vmId + "/config";
+        nlohmann::json requestBody = {
+            {"changed_block_tracking_enabled", false}
+        };
+        
+        nlohmann::json response;
+        bool success = makeRequest("PATCH", endpoint, requestBody, response);
+        if (success) {
+            Logger::info("Successfully disabled CBT for VM: " + vmId);
+        } else {
+            Logger::error("Failed to disable CBT for VM: " + vmId);
+        }
+        return success;
+    } catch (const std::exception& e) {
+        Logger::error("Exception while disabling CBT: " + std::string(e.what()));
+        return false;
+    }
+}
+
+bool VSphereRestClient::isCBTEnabled(const std::string& vmId) {
+    Logger::info("Checking CBT status for VM: " + vmId);
+    try {
+        std::string endpoint = "/rest/vcenter/vm/" + vmId + "/config";
+        nlohmann::json response;
+        bool success = makeRequest("GET", endpoint, nlohmann::json(), response);
+        if (success && response.contains("changed_block_tracking_enabled")) {
+            bool enabled = response["changed_block_tracking_enabled"];
+            Logger::info("CBT status for VM " + vmId + ": " + (enabled ? "enabled" : "disabled"));
+            return enabled;
+        }
+        Logger::error("Failed to get CBT status for VM: " + vmId);
+        return false;
+    } catch (const std::exception& e) {
+        Logger::error("Exception while checking CBT status: " + std::string(e.what()));
+        return false;
+    }
 }
 
 bool VSphereRestClient::getVMPowerState(const std::string& vmId, std::string& powerState) {
@@ -622,17 +656,22 @@ bool VSphereRestClient::rebootVM(const std::string& vmId) {
 }
 
 bool VSphereRestClient::createSnapshot(const std::string& vmId, const std::string& name, const std::string& description) {
-    nlohmann::json data = {
-        {"name", name},
-        {"description", description}
-    };
-    nlohmann::json response;
-    return makeRequest("POST", "/rest/vcenter/vm/" + vmId + "/snapshot", data, response);
+    // FixMe: For now, we don't create snapshots, we just return true
+    //nlohmann::json data = {
+    //    {"name", name},
+    //    {"description", description}
+    //};
+    //nlohmann::json response;
+    //return makeRequest("POST", "/rest/vcenter/vm/" + vmId + "/snapshot", data, response);
+
+    return true;
 }
 
 bool VSphereRestClient::removeSnapshot(const std::string& vmId, const std::string& snapshotId) {
-    nlohmann::json response;
-    return makeRequest("DELETE", "/rest/vcenter/vm/" + vmId + "/snapshot/" + snapshotId, nlohmann::json(), response);
+    // FixMe: For now, we don't remove snapshots, we just return true
+    //nlohmann::json response;
+    //return makeRequest("DELETE", "/rest/vcenter/vm/" + vmId + "/snapshot/" + snapshotId, nlohmann::json(), response);
+    return true;
 }
 
 bool VSphereRestClient::revertToSnapshot(const std::string& vmId, const std::string& snapshotId) {
@@ -1171,20 +1210,27 @@ bool VSphereRestClient::getBackup(const std::string& backupId, std::string& resp
 
 bool VSphereRestClient::refreshSession() {
     if (!isLoggedIn_) {
+        Logger::debug("Cannot refresh session: not logged in");
         return false;
     }
     
+    Logger::debug("Attempting to refresh session");
     nlohmann::json response;
     if (makeRequest("POST", "/rest/com/vmware/cis/session/refresh", nlohmann::json(), response)) {
         try {
+            std::string oldSessionId = sessionId_;
             sessionId_ = response["value"].get<std::string>();
             Logger::debug("Successfully refreshed session");
+            Logger::debug("Old session ID: " + oldSessionId);
+            Logger::debug("New session ID: " + sessionId_);
             return true;
         } catch (const std::exception& e) {
             Logger::error("Failed to parse session refresh response: " + std::string(e.what()));
+            Logger::debug("Raw response: " + response.dump());
             return false;
         }
     }
+    Logger::error("Failed to refresh session");
     return false;
 }
 

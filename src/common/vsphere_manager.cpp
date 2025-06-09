@@ -32,6 +32,7 @@ bool VSphereManager::connect() {
 
 void VSphereManager::disconnect() {
     if (connected_) {
+        Logger::debug("Logging out from vSphereManager");
         restClient_->logout();
         connected_ = false;
     }

@@ -3,6 +3,17 @@
 # Exit on error
 set -e
 
+# Save original LD_LIBRARY_PATH
+ORIGINAL_LD_LIBRARY_PATH=$LD_LIBRARY_PATH
+ORIGINAL_LD_PRELOAD=$LD_PRELOAD
+
+# Set to Debug Mode
+export CMAKE_BUILD_TYPE=Debug
+export CMAKE_CXX_FLAGS="-g -O0 -Wall -Wextra -DDEBUG" 
+
+# Set VDDK library path
+export LD_LIBRARY_PATH="/usr/local/vddk/lib64:$LD_LIBRARY_PATH"
+
 # Function to clean build directory
 clean() {
     echo "Cleaning build directory..."
@@ -16,40 +27,46 @@ clean() {
 
 # Function to build the project
 build() {
-    # Verify VDDK paths
     echo "Checking VDDK paths..."
-    if [ ! -d "/usr/local/vddk/include" ]; then
-        echo "Error: VDDK include directory not found at /usr/local/vddk/include"
+    if [ ! -d "/usr/local/vddk" ]; then
+        echo "Error: VDDK not found at /usr/local/vddk"
         exit 1
     fi
 
-    if [ ! -f "/usr/local/vddk/include/vixDiskLib.h" ]; then
-        echo "Error: vixDiskLib.h not found at /usr/local/vddk/include/vixDiskLib.h"
-        exit 1
-    fi
-
-    # Check compiler version
     echo "Checking compiler version..."
     g++ --version
 
     # Create build directory if it doesn't exist
     mkdir -p build
-
-    # Change to build directory
     cd build
 
-    # Run CMake with the correct paths and verbose output
-    cmake -DVDDK_ROOT=/usr/local/vddk \
-          -DVSPHERE_SDK_ROOT=/usr/local/vSphereSDK \
-          -DCMAKE_VERBOSE_MAKEFILE=ON \
-          -DCMAKE_CXX_COMPILER=g++ \
-          -DCMAKE_CXX_FLAGS="-std=gnu++17" \
-          ..
+    # Check if debug build is requested
+    if [ "$DEBUG" = "1" ]; then
+        echo "Building in debug mode..."
+        cmake -DCMAKE_BUILD_TYPE=Debug \
+              -DCMAKE_CXX_FLAGS_DEBUG="-g -O0 -Wall -Wextra -DDEBUG" \
+              ..
+    else
+        # Run CMake with system libraries
+        cmake ..
+    fi
 
-    # Build the project with verbose output
-    make VERBOSE=1
+    # Build the project
+    make -j$(nproc)
 
-    echo "Build completed successfully!"
+    # Restore original environment variables
+    export LD_LIBRARY_PATH=$ORIGINAL_LD_LIBRARY_PATH
+    export LD_PRELOAD=$ORIGINAL_LD_PRELOAD
+
+    # Make the run script executable
+    chmod +x ../scripts/run_genievm.sh
+
+    if [ "$DEBUG" = "1" ]; then
+        echo "Debug build completed. Use ./scripts/run_genievm.sh to run the program."
+        echo "For debugging, run: gdb ./build/genievm"
+    else
+        echo "Build completed. Use ./scripts/run_genievm.sh to run the program."
+    fi
 }
 
 # Function to rebuild (clean + build)
@@ -66,14 +83,19 @@ case "$1" in
     "rebuild")
         rebuild
         ;;
+    "debug")
+        export DEBUG=1
+        rebuild
+        ;;
     "build"|"")
         build
         ;;
     *)
-        echo "Usage: $0 {build|clean|rebuild}"
+        echo "Usage: $0 {build|clean|rebuild|debug}"
         echo "  build   - Build the project (default)"
         echo "  clean   - Clean the build directory"
         echo "  rebuild - Clean and rebuild the project"
+        echo "  debug   - Clean and rebuild with debug symbols"
         exit 1
         ;;
 esac 

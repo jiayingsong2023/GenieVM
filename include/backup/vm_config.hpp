@@ -19,19 +19,28 @@ struct BackupConfig {
     std::string sourcePath;  // Path to source disk
     std::string backupPath;  // Path to backup disk
     std::string backupDir;  // Directory to store backups
-    std::string scheduleType;  // "daily", "weekly", "monthly"
+    std::string scheduleType;  // "daily", "weekly", "monthly", "once", "interval"
     struct {
         int hour = 0;
         int minute = 0;
         int day = 1;  // Day of week (0-6) for weekly, day of month (1-31) for monthly
     } schedule;
-    int compressionLevel = 0;
-    int maxConcurrentDisks = 1;
-    int retentionDays = 7;
-    int maxBackups = 10;
-    bool enableCBT = true;
-    bool incremental = false;  // Whether to perform incremental backup
+    int maxBackups{0};
+    bool incremental{false};
+    int compressionLevel{0};
+    int maxConcurrentDisks{1};
+    bool enableCBT{true};
+    int retentionDays{7};
     std::vector<std::string> excludedDisks;
+};
+
+// Configuration for verify operations
+struct VerifyConfig {
+    std::string backupId;
+    bool verifyChecksums = true;
+    bool verifyMetadata = true;
+    bool verifyData = true;
+    int maxConcurrentDisks = 1;
 };
 
 // Configuration for restore operations
@@ -39,13 +48,17 @@ struct RestoreConfig {
     std::string vmId;
     std::string backupId;
     std::string vmName;           // Name of the VM to create
-    std::string targetDatastore;
-    std::string targetResourcePool;
+    std::string datastore;        // Target datastore
+    std::string resourcePool;     // Target resource pool
     std::string guestOS;          // Guest OS type
+    std::string restorePath;      // Path to restore the VM
     int numCPUs = 2;             // Number of CPUs
     int memoryMB = 4096;         // Memory size in MB
-    bool powerOnAfterRestore = false;  // Whether to power on the VM after restore
+    bool verifyAfterRestore{true};
+    bool powerOnAfterRestore{false};
     std::vector<DiskConfig> diskConfigs;
+    int maxConcurrentDisks{1};
+    std::vector<std::string> excludedDisks;
     // vSphere connection parameters
     std::string vsphereHost;
     std::string vsphereUsername;

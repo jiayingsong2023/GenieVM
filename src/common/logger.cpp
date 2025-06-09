@@ -10,14 +10,15 @@
 #include <cerrno>   // for errno
 
 std::mutex Logger::mutex_;
-std::ofstream Logger::logFile_;
 LogLevel Logger::currentLevel_ = LogLevel::DEBUG;
 bool Logger::initialized_ = false;
+std::string Logger::logPath_ = "/tmp/genievm.log";
 
 bool Logger::initialize(const std::string& logPath, LogLevel level) {
     std::lock_guard<std::mutex> lock(mutex_);
     
     if (initialized_) {
+        std::cout << "Logger already initialized" << std::endl;
         return false;
     }
 
@@ -28,36 +29,33 @@ bool Logger::initialize(const std::string& logPath, LogLevel level) {
             std::filesystem::create_directories(logDir);
         }
 
-        // Test write to log file
+        // Test if we can write to the log file
         FILE* testFile = fopen(logPath.c_str(), "a");
         if (!testFile) {
+            std::cerr << "Failed to open log file: " << strerror(errno) << std::endl;
             return false;
         }
-        fprintf(testFile, "=== Logger Initialization ===\n");
-        fflush(testFile);
         fclose(testFile);
 
+        logPath_ = logPath;
         currentLevel_ = level;
         initialized_ = true;
         
-        // Write initial log entry
-        log(LogLevel::INFO, "Logger initialized with level: " + levelToString(currentLevel_));
+        std::cout << "Logger initialized with level: " << levelToString(currentLevel_) << std::endl;
         return true;
     } catch (const std::exception& e) {
+        std::cerr << "Logger initialization failed: " << e.what() << std::endl;
         return false;
     } catch (...) {
+        std::cerr << "Logger initialization failed with unknown error" << std::endl;
         return false;
     }
 }
 
 void Logger::shutdown() {
     std::lock_guard<std::mutex> lock(mutex_);
-    
     if (initialized_) {
-        log(LogLevel::INFO, "Logger shutting down");
-        if (logFile_.is_open()) {
-            logFile_.close();
-        }
+        std::cout << "Logger shutting down" << std::endl;
         initialized_ = false;
     }
 }
@@ -65,11 +63,16 @@ void Logger::shutdown() {
 void Logger::setLogLevel(LogLevel level) {
     std::lock_guard<std::mutex> lock(mutex_);
     currentLevel_ = level;
-    log(LogLevel::INFO, "Log level changed to: " + levelToString(level));
+    std::cout << "Log level changed to: " << levelToString(level) << std::endl;
 }
 
 void Logger::log(LogLevel level, const std::string& message) {
-    if (level > currentLevel_) {
+    if (!initialized_) {
+        return;
+    }
+
+    // Only log if the message level is greater than or equal to the current level
+    if (level < currentLevel_) {
         return;
     }
 
@@ -93,12 +96,15 @@ void Logger::log(LogLevel level, const std::string& message) {
         std::cout.flush();
     }
     
-    // Write to file using direct file I/O
-    FILE* logFile = fopen("/tmp/genievm.log", "a");
+    // Write to file using direct file I/O with error handling
+    FILE* logFile = fopen(logPath_.c_str(), "a");
     if (logFile) {
         fprintf(logFile, "%s", logMessage.c_str());
         fflush(logFile);
         fclose(logFile);
+    } else {
+        // If file open fails, write to stderr
+        std::cerr << "Failed to open log file: " << strerror(errno) << std::endl;
     }
 }
 

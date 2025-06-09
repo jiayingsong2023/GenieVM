@@ -1,62 +1,85 @@
+#include "common/backup_cli.hpp"
+#include "common/logger.hpp"
 #include <iostream>
 #include <string>
-#include "common/logger.hpp"
-#include <filesystem>
-#include <cstdio>
-#include <CLI/CLI.hpp>
 
-// Forward declarations
-int backupMain(int argc, char* argv[]);
-int restoreMain(int argc, char* argv[]);
 
-void printMainUsage() {
-    std::cout << "Usage: genievm <command> [options]\n"
+void printBackupUsage() {
+    std::cout << "Usage: genievm backup [command] [options]\n"
               << "Commands:\n"
-              << "  backup                     Backup a VM\n"
-              << "  restore                    Restore a VM\n"
+              << "  backup    - Create a backup of a VM\n"
+              << "  schedule  - Schedule a backup\n"
+              << "  list      - List scheduled backups\n"
+              << "  verify    - Verify a backup\n"
+              << "  restore   - Restore from a backup\n"
               << "\n"
-              << "Use 'genievm <command> --help' for more information about a command.\n";
+              << "Options:\n"
+              << "  -h, --help           Show this help message\n"
+              << "  -v, --vm-name        VM name or ID\n"
+              << "  -b, --backup-dir     Backup directory\n"
+              << "  -s, --server         Server address\n"
+              << "  -u, --username       Username\n"
+              << "  -p, --password       Password\n"
+              << "  -i, --incremental    Enable incremental backup\n"
+              << "  --schedule           Schedule time (HH:MM)\n"
+              << "  --interval           Interval in minutes\n"
+              << "  --parallel           Number of parallel disk operations\n"
+              << "  --compression        Compression level (0-9)\n"
+              << "  --retention          Retention period in days\n"
+              << "  --max-backups        Maximum number of backups to keep\n"
+              << "  --disable-cbt        Disable Changed Block Tracking\n"
+              << "  --exclude-disk       Exclude disk from backup\n"
+              << "  --vm-type            Backup provider type (vmware/kvm)\n";
 }
 
-int main(int argc, char* argv[]) {
-    // Immediate debug output to stderr
-    fprintf(stderr, "Starting GenieVM...\n");
-    fflush(stderr);
-
-    // Initialize logger
-    fprintf(stderr, "Initializing logger...\n");
-    fflush(stderr);
-    
-    if (!Logger::initialize("/tmp/genievm.log", LogLevel::DEBUG)) {
-        fprintf(stderr, "Failed to initialize logger\n");
-        fflush(stderr);
-        return 1;
+int main(int argc, char** argv) {
+    std::cout << "Starting GenieVM with " << argc << " arguments:" << std::endl;
+    for (int i = 0; i < argc; i++) {
+        std::cout << "  argv[" << i << "]: " << argv[i] << std::endl;
     }
-    
-    fprintf(stderr, "Logger initialized successfully\n");
-    fflush(stderr);
 
-    // Parse command line arguments
-    fprintf(stderr, "Parsing command line arguments...\n");
-    fflush(stderr);
-    
-    CLI::App app{"GenieVM - VMware vSphere Backup and Restore Tool"};
+    // Check for help flag first, before any initialization
+    if (argc > 1 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
+        std::cout << "Help flag detected, showing usage" << std::endl;
+        printBackupUsage();
+        return 0;
+    }
 
+    // Check for version flag
+    if (argc > 1 && (std::string(argv[1]) == "--version" || std::string(argv[1]) == "-v")) {
+        std::cout << "Version flag detected, showing version" << std::endl;
+        std::cout << "GenieVM version 1.0.0\n";
+        return 0;
+    }
+
+    // Check for command
     if (argc < 2) {
-        printMainUsage();
+        std::cerr << "Error: No command specified" << std::endl;
+        printBackupUsage();
         return 1;
     }
 
     std::string command = argv[1];
-    if (command == "backup") {
-        // Skip the command name and pass the rest of the arguments
-        return backupMain(argc - 1, argv + 1);
-    } else if (command == "restore") {
-        // Skip the command name and pass the rest of the arguments
-        return restoreMain(argc - 1, argv + 1);
+    std::cout << "Command detected: " << command << std::endl;
+
+    // Initialize logger only if we're not showing help or version
+    if (command != "--help" && command != "-h" && command != "--version" && command != "-v") {
+        std::cout << "Initializing logger..." << std::endl;
+        if (!Logger::initialize("/tmp/genievm.log", LogLevel::DEBUG)) {
+            std::cerr << "Failed to initialize logger" << std::endl;
+            return 1;
+        }
+        std::cout << "Logger initialized successfully" << std::endl;
     } else {
-        std::cerr << "Error: Unknown command '" << command << "'\n";
-        printMainUsage();
+        std::cout << "Skipping logger initialization for help/version command" << std::endl;
+    }
+
+    try {
+        BackupCLI cli;
+        cli.run(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << "Error in main: " << e.what() << std::endl;
         return 1;
     }
 } 
+
